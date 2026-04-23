@@ -108,7 +108,17 @@
   - Agent Loop 至少能完成一次完整的 ReAct 循环
   - `mvnw test` 通过
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 新增 `ReviewEngine`、`ToolCallParser`、`TokenCounter`、`ReviewPromptTemplates`，形成单 `ReviewAgent` 的最小 ReAct Loop
+  - 新增 `ToolRegistry` + `ToolExecutor` 基础版，当前按注册顺序串行执行只读 Tool，遇到未知工具或运行异常时 fail fast
+  - 新增基础 Tool：`read_file`、`ast_parse`、`search_pattern`，支持文件读取、Java AST 符号提取和仓库内模式搜索
+  - `codepilot-cli` 新增 `LocalReviewRunner`，能从 unified diff 构造最小 `ContextPack`，驱动单 `security-reviewer` 走完 review 闭环
+  - `CodePilotCli` 落地 `review --diff ... [--repo ...] [--response-file ...]` 命令，支持脚本化 LLM 响应做离线演示，也保留 OpenAI-compatible live mode 接口
+  - 新增 P3 定向测试，覆盖 native function calling / prompt-driven tool call 解析、基础 Tool 执行、单 Agent Loop 和 CLI 最小链路
+- 验收结果
+  - `2026-04-23` 执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=ToolCallParserTest,ToolExecutorTest,ReviewEngineTest" test`，4 个 P3 core 测试通过
+  - `2026-04-23` 执行 `.\mvnw.cmd -pl codepilot-cli -am "-Dtest=LocalReviewRunnerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，CLI 最小链路测试通过
 
 ### P4 Context Compiler V1
 
