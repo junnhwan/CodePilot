@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.codepilot.core.infrastructure.persistence.mybatis.session.ReviewSessionMapper">
+
+    <select id="selectById"
+            parameterType="string"
+            resultType="com.codepilot.core.infrastructure.persistence.mybatis.session.ReviewSessionRow">
+        SELECT session_id AS sessionId,
+               project_id AS projectId,
+               pr_number AS prNumber,
+               pr_url AS prUrl,
+               state,
+               diff_summary_json AS diffSummaryJson,
+               review_plan_json AS reviewPlanJson,
+               review_result_json AS reviewResultJson,
+               created_at AS createdAt,
+               completed_at AS completedAt
+        FROM review_session
+        WHERE session_id = #{sessionId}
+    </select>
+
+    <insert id="upsert">
+        INSERT INTO review_session (
+            session_id,
+            project_id,
+            pr_number,
+            pr_url,
+            state,
+            diff_summary_json,
+            review_plan_json,
+            review_result_json,
+            created_at,
+            completed_at
+        )
+        VALUES (
+            #{row.sessionId},
+            #{row.projectId},
+            #{row.prNumber},
+            #{row.prUrl},
+            #{row.state},
+            #{row.diffSummaryJson},
+            #{row.reviewPlanJson},
+            #{row.reviewResultJson},
+            #{row.createdAt},
+            #{row.completedAt}
+        )
+        ON DUPLICATE KEY UPDATE
+            project_id = VALUES(project_id),
+            pr_number = VALUES(pr_number),
+            pr_url = VALUES(pr_url),
+            state = VALUES(state),
+            diff_summary_json = VALUES(diff_summary_json),
+            review_plan_json = VALUES(review_plan_json),
+            review_result_json = VALUES(review_result_json),
+            created_at = VALUES(created_at),
+            completed_at = VALUES(completed_at)
+    </insert>
+</mapper>

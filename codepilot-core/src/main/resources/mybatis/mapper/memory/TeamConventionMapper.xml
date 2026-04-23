@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.codepilot.core.infrastructure.persistence.mybatis.memory.TeamConventionMapper">
+
+    <select id="selectByProjectId"
+            parameterType="string"
+            resultType="com.codepilot.core.infrastructure.persistence.mybatis.memory.TeamConventionRow">
+        SELECT convention_id AS conventionId,
+               project_id AS projectId,
+               category,
+               rule_text AS rule,
+               example_good AS exampleGood,
+               example_bad AS exampleBad,
+               confidence,
+               source
+        FROM team_convention
+        WHERE project_id = #{projectId}
+        ORDER BY convention_id
+    </select>
+
+    <delete id="deleteByProjectId" parameterType="string">
+        DELETE FROM team_convention
+        WHERE project_id = #{projectId}
+    </delete>
+
+    <insert id="insertAll">
+        INSERT INTO team_convention (
+            convention_id,
+            project_id,
+            category,
+            rule_text,
+            example_good,
+            example_bad,
+            confidence,
+            source
+        )
+        VALUES
+        <foreach collection="rows" item="row" separator=",">
+            (
+                #{row.conventionId},
+                #{row.projectId},
+                #{row.category},
+                #{row.rule},
+                #{row.exampleGood},
+                #{row.exampleBad},
+                #{row.confidence},
+                #{row.source}
+            )
+        </foreach>
+    </insert>
+</mapper>

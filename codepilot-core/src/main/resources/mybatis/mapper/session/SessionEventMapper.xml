@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.codepilot.core.infrastructure.persistence.mybatis.session.SessionEventMapper">
+
+    <select id="selectBySessionId"
+            parameterType="string"
+            resultType="com.codepilot.core.infrastructure.persistence.mybatis.session.SessionEventRow">
+        SELECT id,
+               session_id AS sessionId,
+               event_type AS eventType,
+               payload_json AS payloadJson,
+               occurred_at AS occurredAt
+        FROM session_event
+        WHERE session_id = #{sessionId}
+        ORDER BY occurred_at, id
+    </select>
+
+    <delete id="deleteBySessionId" parameterType="string">
+        DELETE FROM session_event
+        WHERE session_id = #{sessionId}
+    </delete>
+
+    <insert id="insert">
+        INSERT INTO session_event (
+            session_id,
+            event_type,
+            payload_json,
+            occurred_at
+        )
+        VALUES (
+            #{row.sessionId},
+            #{row.eventType},
+            #{row.payloadJson},
+            #{row.occurredAt}
+        )
+    </insert>
+</mapper>

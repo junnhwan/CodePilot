@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.codepilot.core.infrastructure.persistence.mybatis.memory.ReviewPatternMapper">
+
+    <select id="selectByProjectId"
+            parameterType="string"
+            resultType="com.codepilot.core.infrastructure.persistence.mybatis.memory.ReviewPatternRow">
+        SELECT pattern_id AS patternId,
+               project_id AS projectId,
+               pattern_type AS patternType,
+               title,
+               description,
+               code_example AS codeExample,
+               frequency,
+               last_seen_at AS lastSeenAt
+        FROM project_memory
+        WHERE project_id = #{projectId}
+        ORDER BY pattern_id
+    </select>
+
+    <delete id="deleteByProjectId" parameterType="string">
+        DELETE FROM project_memory
+        WHERE project_id = #{projectId}
+    </delete>
+
+    <insert id="insertAll">
+        INSERT INTO project_memory (
+            pattern_id,
+            project_id,
+            pattern_type,
+            title,
+            description,
+            code_example,
+            frequency,
+            last_seen_at
+        )
+        VALUES
+        <foreach collection="rows" item="row" separator=",">
+            (
+                #{row.patternId},
+                #{row.projectId},
+                #{row.patternType},
+                #{row.title},
+                #{row.description},
+                #{row.codeExample},
+                #{row.frequency},
+                #{row.lastSeenAt}
+            )
+        </foreach>
+    </insert>
+</mapper>

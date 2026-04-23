@@ -77,7 +77,18 @@
   - `mvnw compile` 通过
   - `mvnw test` 通过（基础单元测试）
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 新增 `domain/agent`、`plan`、`context`、`memory`、`tool`、`review`、`session` 最小领域模型
+  - `ReviewTask`、`Finding`、`ReviewSession` 落地关键状态机与 fail-fast 约束，显式区分 `REPORTED` 与 `CONFIRMED`
+  - 新增 `ProjectMemoryRepository`、`ReviewSessionRepository` 领域端口
+  - 新增 MyBatis 持久化骨架：`ReviewSession` / `SessionEvent` / `ReviewPattern` / `TeamConvention` 的 mapper、row、repository adapter
+  - 新增 `db/schema/001_p2_domain.sql` 作为当前 P2 表结构真相
+  - 新增领域与持久化基础测试，覆盖状态迁移、依赖 DAG、session 事件装载、memory 聚合装载
+- 验收结果
+  - `2026-04-23` 执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=ReviewTaskTest,TaskGraphTest,FindingTest,ReviewSessionTest" test`，9 个领域测试全部通过
+  - `2026-04-23` 执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=MybatisReviewSessionRepositoryTest,MybatisProjectMemoryRepositoryTest" test`，2 个持久化骨架测试全部通过
+  - `2026-04-23` 执行 `.\mvnw.cmd compile` 与 `.\mvnw.cmd test`，多模块编译与测试通过
 
 ### P3 Agent Loop V1 — 单 ReviewAgent
 
