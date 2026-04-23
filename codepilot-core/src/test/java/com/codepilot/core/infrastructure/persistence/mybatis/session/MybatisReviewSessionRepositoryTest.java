@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,6 +44,66 @@ class MybatisReviewSessionRepositoryTest {
         assertThat(repository.findEvents("session-42"))
                 .extracting(SessionEvent::type)
                 .contains(SessionEvent.Type.REVIEW_COMPLETED);
+    }
+
+    @Test
+    void preservesAppendedEventsAcrossSubsequentSave() {
+        InMemoryReviewSessionMapper reviewSessionMapper = new InMemoryReviewSessionMapper();
+        InMemorySessionEventMapper sessionEventMapper = new InMemorySessionEventMapper();
+        MybatisReviewSessionRepository repository = new MybatisReviewSessionRepository(
+                reviewSessionMapper,
+                sessionEventMapper,
+                JsonMapper.builder().findAndAddModules().build()
+        );
+
+        DiffSummary diffSummary = DiffSummary.of(List.of(new DiffSummary.ChangedFile(
+                "src/main/java/App.java",
+                DiffSummary.ChangeType.MODIFIED,
+                8,
+                2,
+                List.of("App#run")
+        )));
+        ReviewTask reviewTask = ReviewTask.pending(
+                "task-security",
+                ReviewTask.TaskType.SECURITY,
+                ReviewTask.Priority.HIGH,
+                List.of("src/main/java/App.java"),
+                List.of("verify auth path"),
+                List.of()
+        );
+        ReviewPlan reviewPlan = new ReviewPlan(
+                "plan-42",
+                "session-42",
+                diffSummary,
+                TaskGraph.of(List.of(reviewTask)),
+                ReviewPlan.ReviewStrategy.SECURITY_FIRST
+        );
+        ReviewSession reviewSession = ReviewSession.initialize(
+                        "session-42",
+                        "project-alpha",
+                        42,
+                        "https://example.com/pr/42",
+                        Instant.parse("2026-04-23T00:00:00Z")
+                )
+                .startPlanning(diffSummary, Instant.parse("2026-04-23T00:01:00Z"))
+                .attachPlan(reviewPlan, Instant.parse("2026-04-23T00:02:00Z"))
+                .startReviewing(Instant.parse("2026-04-23T00:03:00Z"));
+        repository.save(reviewSession);
+        repository.append(SessionEvent.of(
+                "session-42",
+                SessionEvent.Type.TASK_STARTED,
+                Instant.parse("2026-04-23T00:03:30Z"),
+                Map.of("taskId", "task-security")
+        ));
+
+        ReviewSession updated = repository.findById("session-42")
+                .orElseThrow()
+                .startMerging(Instant.parse("2026-04-23T00:04:00Z"));
+        repository.save(updated);
+
+        assertThat(repository.findEvents("session-42"))
+                .extracting(SessionEvent::type)
+                .contains(SessionEvent.Type.TASK_STARTED, SessionEvent.Type.SESSION_STATE_CHANGED);
     }
 
     private ReviewSession buildReviewSession() {

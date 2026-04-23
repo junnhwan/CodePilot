@@ -19,9 +19,19 @@ public class GatewayProperties {
 
     public static class Github {
 
+        private String apiBaseUrl = "https://api.github.com";
+
         private String webhookSecret = "";
 
         private String apiToken = "";
+
+        public String getApiBaseUrl() {
+            return apiBaseUrl;
+        }
+
+        public void setApiBaseUrl(String apiBaseUrl) {
+            this.apiBaseUrl = apiBaseUrl;
+        }
 
         public String getWebhookSecret() {
             return webhookSecret;

@@ -35,6 +35,9 @@ public record SessionEvent(
         SESSION_CREATED,
         SESSION_STATE_CHANGED,
         PLAN_ATTACHED,
+        TASK_STARTED,
+        FINDING_REPORTED,
+        TASK_COMPLETED,
         REVIEW_COMPLETED,
         REVIEW_FAILED
     }

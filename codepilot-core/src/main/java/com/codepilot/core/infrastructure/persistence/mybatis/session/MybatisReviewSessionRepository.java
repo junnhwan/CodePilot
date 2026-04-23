@@ -14,6 +14,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 
@@ -49,9 +50,10 @@ public class MybatisReviewSessionRepository implements ReviewSessionRepository {
 
     @Override
     public void save(ReviewSession reviewSession) {
+        List<SessionEvent> mergedEvents = mergeEvents(reviewSession.sessionId(), reviewSession.events());
         reviewSessionMapper.upsert(toRow(reviewSession));
         sessionEventMapper.deleteBySessionId(reviewSession.sessionId());
-        for (SessionEvent event : reviewSession.events()) {
+        for (SessionEvent event : mergedEvents) {
             sessionEventMapper.insert(toRow(event));
         }
     }
@@ -149,5 +151,26 @@ public class MybatisReviewSessionRepository implements ReviewSessionRepository {
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Failed to deserialize %s".formatted(context), exception);
         }
+    }
+
+    private List<SessionEvent> mergeEvents(String sessionId, List<SessionEvent> sessionEvents) {
+        LinkedHashMap<String, SessionEvent> merged = new LinkedHashMap<>();
+        for (SessionEvent event : findEvents(sessionId)) {
+            merged.put(eventKey(event), event);
+        }
+        for (SessionEvent event : sessionEvents) {
+            merged.put(eventKey(event), event);
+        }
+        return List.copyOf(merged.values());
+    }
+
+    private String eventKey(SessionEvent sessionEvent) {
+        return sessionEvent.sessionId()
+                + "|"
+                + sessionEvent.type().name()
+                + "|"
+                + sessionEvent.occurredAt()
+                + "|"
+                + writeJson("sessionId=%s sessionEvent".formatted(sessionEvent.sessionId()), sessionEvent.payload());
     }
 }

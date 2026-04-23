@@ -168,7 +168,17 @@
   - SSE 推送可连接
   - `mvnw test` 通过
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-gateway` 新增 `WebhookReceiver`、`SseController`、`ReviewApiController`，打通 GitHub Webhook 接收、SSE 订阅和 Review 查询/报告接口
+  - 新增 `GitHubWebhookVerifier`、`GitHubPullRequestClient`、`GitHubCommentWriter`，支持 HMAC 校验、PR diff/文件内容拉取，以及 PR summary comment + inline comment 回写
+  - 新增 `RedisWebhookDeduplicator` + `RedisStreamReviewEventBuffer`，实现同一 `repo + pr + headSha` 去重和 Redis Stream 事件缓冲
+  - 新增 `GitHubWebhookIntakeService` + `GitHubReviewWorker`，把 Webhook 事件接到现有单 `ReviewAgent` 主链，复用 `ContextCompiler`、`ReviewEngine`、基础 Tool 完成最小闭环
+  - `codepilot-core` 新增 `InMemoryReviewSessionRepository` 作为当前 Gateway 运行时会话存储，并补齐 `SessionEvent` 的 task/finding 事件类型
+  - 修正 `MybatisReviewSessionRepository` 的事件保存语义，保证 `append` 的 session 事件不会被后续 `save` 覆盖
+  - 新增 P5 定向测试，覆盖 Webhook 接收、Query API、GitHub diff 拉取、comment 回写、去重入队，以及 worker 端到端执行
+- 验收结果
+  - `2026-04-23` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=MybatisReviewSessionRepositoryTest,WebhookReceiverTest,ReviewApiControllerTest,GitHubCommentWriterTest,GitHubPullRequestClientTest,GitHubWebhookIntakeServiceTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P5 定向测试全部通过
 
 ---
 
