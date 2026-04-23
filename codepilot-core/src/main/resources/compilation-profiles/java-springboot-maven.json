@@ -1,0 +1,40 @@
+{
+  "profileId": "java-springboot-maven",
+  "language": "java",
+  "framework": "spring-boot",
+  "buildTool": "maven",
+  "astParser": "javaparser",
+  "tokenBudget": {
+    "total": 8000,
+    "structuredFacts": 500,
+    "diffSummary": 1000,
+    "impactSet": 500,
+    "codeSnippets": 4000,
+    "memories": 1500,
+    "reserve": 500
+  },
+  "filePriority": [
+    "changed_files",
+    "direct_callers",
+    "interface_implementations",
+    "direct_callees",
+    "configuration_files",
+    "test_files",
+    "indirect_dependencies"
+  ],
+  "astModes": {
+    "changed_files": "FULL",
+    "direct_callers": "METHOD_SIG",
+    "interface_implementations": "SYMBOLS",
+    "direct_callees": "METHOD_SIG",
+    "configuration_files": "REGEX_TEXT",
+    "test_files": "REGEX_TEXT",
+    "indirect_dependencies": "SYMBOLS"
+  },
+  "fallbackStrategy": "REGEX_TEXT_ANALYSIS",
+  "excludePatterns": [
+    "**/generated/**",
+    "**/target/**",
+    "**/node_modules/**"
+  ]
+}

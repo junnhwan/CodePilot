@@ -137,7 +137,20 @@
   - ContextPack 包含变更文件内容 + 直接依赖的符号信息
   - `mvnw test` 通过
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 新增 `domain/context` 正式边界：`ContextCompiler`、`CompilationStrategy`、`AstParser`
+  - 新增 `application/context` 的 `DiffAnalyzer`、`ImpactCalculator`、`DefaultContextCompiler`，把 P4 编译链路收敛到 `core`
+  - 新增 `infrastructure/context` 的 `JavaParserAstParser` 与 `ClasspathCompilationStrategyLoader`，支持 JavaParser 解析和 `REGEX_TEXT_ANALYSIS` 降级
+  - 新增编译 profile `codepilot-core/src/main/resources/compilation-profiles/java-springboot-maven.json`
+  - `LocalReviewRunner` 改为复用 `ContextCompiler` 产出 `ContextPack`，移除 P3 中内嵌的临时 diff/context 拼装逻辑
+  - 新增 P4 定向测试，覆盖 diff 分析、AST 解析/降级、影响范围计算、ContextPack 组装，以及 CLI 对新编译链路的消费
+- 验收结果
+  - `2026-04-23` 执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=DiffAnalyzerTest,JavaParserAstParserTest,ImpactCalculatorTest,DefaultContextCompilerTest" test`，5 个 P4 定向测试全部通过
+  - `2026-04-23` 执行 `.\mvnw.cmd -pl codepilot-cli,codepilot-core -am "-Dtest=DiffAnalyzerTest,JavaParserAstParserTest,ImpactCalculatorTest,DefaultContextCompilerTest,LocalReviewRunnerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P4 核心测试和 CLI 链路测试全部通过
+  - `2026-04-23` 执行 `.\mvnw.cmd compile`，多模块编译通过
+  - `2026-04-23` 执行 `.\mvnw.cmd test`，全量 21 个测试通过
+  - `2026-04-23` 执行 `git diff --check`，检查通过
 
 ### P5 Gateway + GitHub 集成
 
