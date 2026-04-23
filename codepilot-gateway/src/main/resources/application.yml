@@ -1,0 +1,57 @@
+spring:
+  application:
+    name: codepilot-gateway
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+codepilot:
+  llm:
+    default-provider: ${CODEPILOT_LLM_DEFAULT_PROVIDER:openai}
+    default-model: ${CODEPILOT_LLM_DEFAULT_MODEL:gpt-4.1-mini}
+    providers:
+      - name: openai
+        base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+        api-key: ${OPENAI_API_KEY:}
+        models:
+          - ${CODEPILOT_LLM_DEFAULT_MODEL:gpt-4.1-mini}
+        connect-timeout: 10s
+        read-timeout: 60s
+  storage:
+    mysql:
+      enabled: true
+      url: ${CODEPILOT_MYSQL_URL:jdbc:mysql://localhost:3306/codepilot}
+      username: ${CODEPILOT_MYSQL_USERNAME:codepilot}
+      password: ${CODEPILOT_MYSQL_PASSWORD:codepilot}
+      driver-class-name: com.mysql.cj.jdbc.Driver
+    pgvector:
+      enabled: true
+      url: ${CODEPILOT_PGVECTOR_URL:jdbc:postgresql://localhost:5432/codepilot_memory}
+      username: ${CODEPILOT_PGVECTOR_USERNAME:codepilot}
+      password: ${CODEPILOT_PGVECTOR_PASSWORD:codepilot}
+      driver-class-name: org.postgresql.Driver
+    redis:
+      enabled: true
+      url: ${CODEPILOT_REDIS_URL:redis://localhost:6379}
+      username: ${CODEPILOT_REDIS_USERNAME:}
+      password: ${CODEPILOT_REDIS_PASSWORD:}
+  gateway:
+    github:
+      webhook-secret: ${GITHUB_WEBHOOK_SECRET:}
+      api-token: ${GITHUB_API_TOKEN:}
+    rate-limit:
+      per-repo: ${CODEPILOT_GATEWAY_PER_REPO_RATE_LIMIT:10/min}
+      global: ${CODEPILOT_GATEWAY_GLOBAL_RATE_LIMIT:100/min}
+
+logging:
+  level:
+    com.codepilot: INFO
