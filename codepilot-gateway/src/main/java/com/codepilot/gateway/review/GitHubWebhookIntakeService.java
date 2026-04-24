@@ -4,6 +4,8 @@ import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
 import com.codepilot.gateway.github.GitHubPullRequestEvent;
 import com.codepilot.gateway.github.GitHubPullRequestWebhookPayload;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -14,6 +16,8 @@ import java.util.UUID;
 
 @Service
 public class GitHubWebhookIntakeService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(GitHubWebhookIntakeService.class);
 
     private final RedisWebhookDeduplicator deduplicator;
 
@@ -51,6 +55,11 @@ public class GitHubWebhookIntakeService {
 
     public IntakeResult accept(GitHubPullRequestWebhookPayload payload) {
         if (payload == null || payload.repository() == null || payload.pullRequest() == null || !payload.reviewableAction()) {
+            LOGGER.info(
+                    "Ignoring GitHub pull_request webhook because payload is invalid or action is not reviewable action={} repository={}",
+                    payload == null ? null : payload.action(),
+                    payload == null || payload.repository() == null ? null : payload.repository().fullName()
+            );
             return new IntakeResult(IntakeStatus.IGNORED, null);
         }
 
@@ -73,6 +82,13 @@ public class GitHubWebhookIntakeService {
                 deduplicationTtl
         );
         if (!claim.accepted()) {
+            LOGGER.info(
+                    "Deduplicated GitHub pull_request webhook projectId={} prNumber={} headSha={} existingSessionId={}",
+                    event.projectId(),
+                    event.prNumber(),
+                    event.headSha(),
+                    claim.sessionId()
+            );
             return new IntakeResult(IntakeStatus.DUPLICATE, claim.sessionId());
         }
         String acceptedSessionId = claim.sessionId();
@@ -99,6 +115,13 @@ public class GitHubWebhookIntakeService {
                 "sessionId", acceptedSessionId,
                 "prUrl", payload.pullRequest().htmlUrl()
         ));
+        LOGGER.info(
+                "Accepted GitHub pull_request webhook sessionId={} projectId={} prNumber={} headSha={}",
+                acceptedSessionId,
+                projectId,
+                payload.pullRequest().number(),
+                payload.pullRequest().head().sha()
+        );
         return new IntakeResult(IntakeStatus.ACCEPTED, acceptedSessionId);
     }
 

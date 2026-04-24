@@ -14,6 +14,8 @@ import com.codepilot.core.domain.review.Severity;
 import com.codepilot.core.domain.tool.ToolCall;
 import com.codepilot.core.domain.tool.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -23,6 +25,8 @@ import java.util.Map;
 import java.util.TreeMap;
 
 public final class ReviewEngine {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ReviewEngine.class);
 
     private final LlmClient llmClient;
 
@@ -102,23 +106,89 @@ public final class ReviewEngine {
         messages.add(ReviewPromptTemplates.systemMessage(agentDefinition, reviewTask, contextPack, toolRegistry.toolDefinitions()));
         messages.add(ReviewPromptTemplates.userMessage(reviewTask, contextPack));
         Map<String, Finding> collectedFindings = new LinkedHashMap<>();
+        LOGGER.info(
+                "Starting review task sessionId={} taskId={} reviewer={} type={} model={} maxIterations={}",
+                sessionId,
+                reviewTask.taskId(),
+                agentDefinition.agentName(),
+                reviewTask.type(),
+                model,
+                maxIterations
+        );
 
         for (int iteration = 0; iteration < maxIterations; iteration++) {
-            List<LlmMessage> promptMessages = compactIfNeeded(messages, contextPack);
-            if (promptMessages == null) {
+            ContextGovernor.CompactionResult compactionResult = compactIfNeeded(messages, contextPack);
+            if (!compactionResult.withinBudget()) {
+                LOGGER.warn(
+                        "Prompt budget exceeded after compaction sessionId={} taskId={} reviewer={} originalTokens={} compactedTokens={} budget={}",
+                        sessionId,
+                        reviewTask.taskId(),
+                        agentDefinition.agentName(),
+                        compactionResult.originalTokens(),
+                        compactionResult.compactedTokens(),
+                        promptBudget(contextPack)
+                );
                 return partialResult(sessionId, collectedFindings.values());
             }
-            messages = new ArrayList<>(promptMessages);
+            if (!compactionResult.appliedStrategies().isEmpty()) {
+                LOGGER.info(
+                        "Applied prompt compaction sessionId={} taskId={} reviewer={} strategies={} tokens={} -> {}",
+                        sessionId,
+                        reviewTask.taskId(),
+                        agentDefinition.agentName(),
+                        compactionResult.appliedStrategies(),
+                        compactionResult.originalTokens(),
+                        compactionResult.compactedTokens()
+                );
+            }
+            messages = new ArrayList<>(compactionResult.messages());
 
             var response = llmClient.chat(new LlmRequest(model, List.copyOf(messages), toolRegistry.toolDefinitions(), llmParams));
+            LOGGER.info(
+                    "Received LLM response sessionId={} taskId={} reviewer={} iteration={} finishReason={} usageTotalTokens={}",
+                    sessionId,
+                    reviewTask.taskId(),
+                    agentDefinition.agentName(),
+                    iteration + 1,
+                    response.finishReason(),
+                    response.usage() == null ? null : response.usage().totalTokens()
+            );
             List<ToolCall> toolCalls = toolCallParser.parse(response);
 
             if (!toolCalls.isEmpty()) {
                 collectFindings(collectedFindings, tryParseStructuredContent(response.content()), reviewTask);
+                LOGGER.info(
+                        "Review iteration requested tools sessionId={} taskId={} reviewer={} iteration={} toolCount={} tools={} collectedFindings={}",
+                        sessionId,
+                        reviewTask.taskId(),
+                        agentDefinition.agentName(),
+                        iteration + 1,
+                        toolCalls.size(),
+                        toolNames(toolCalls),
+                        collectedFindings.size()
+                );
                 messages.add(toAssistantToolCallMessage(toolCalls));
                 List<ToolResult> toolResults = toolExecutor.executeAll(toolCalls);
+                long successfulToolCalls = toolResults.stream().filter(ToolResult::success).count();
+                LOGGER.info(
+                        "Tool execution finished sessionId={} taskId={} reviewer={} iteration={} successCount={} failureCount={}",
+                        sessionId,
+                        reviewTask.taskId(),
+                        agentDefinition.agentName(),
+                        iteration + 1,
+                        successfulToolCalls,
+                        toolResults.size() - successfulToolCalls
+                );
                 messages.addAll(toToolMessages(toolCalls, toolResults));
                 if (loopDetector.detect(messages).loopDetected()) {
+                    LOGGER.warn(
+                            "Loop detected while reviewing task sessionId={} taskId={} reviewer={} iteration={} collectedFindings={}",
+                            sessionId,
+                            reviewTask.taskId(),
+                            agentDefinition.agentName(),
+                            iteration + 1,
+                            collectedFindings.size()
+                    );
                     return partialResult(sessionId, collectedFindings.values());
                 }
                 continue;
@@ -127,8 +197,24 @@ public final class ReviewEngine {
             JsonNode payload = toolCallParser.parseStructuredContent(response.content());
             collectFindings(collectedFindings, payload, reviewTask);
             String decision = payload == null ? "" : payload.path("decision").asText("");
+            LOGGER.info(
+                    "Review iteration completed sessionId={} taskId={} reviewer={} iteration={} decision={} collectedFindings={}",
+                    sessionId,
+                    reviewTask.taskId(),
+                    agentDefinition.agentName(),
+                    iteration + 1,
+                    decision,
+                    collectedFindings.size()
+            );
 
             if ("DELIVER".equalsIgnoreCase(decision)) {
+                LOGGER.info(
+                        "Review task delivered sessionId={} taskId={} reviewer={} findings={} partial=false",
+                        sessionId,
+                        reviewTask.taskId(),
+                        agentDefinition.agentName(),
+                        collectedFindings.size()
+                );
                 return new ReviewResult(
                         sessionId,
                         List.copyOf(collectedFindings.values()),
@@ -137,19 +223,34 @@ public final class ReviewEngine {
                 );
             }
 
+            LOGGER.warn(
+                    "Unsupported review decision sessionId={} taskId={} reviewer={} iteration={} decision={}",
+                    sessionId,
+                    reviewTask.taskId(),
+                    agentDefinition.agentName(),
+                    iteration + 1,
+                    decision
+            );
             throw new IllegalStateException("Unsupported review decision %s for task %s".formatted(decision, reviewTask.taskId()));
         }
 
+        LOGGER.warn(
+                "Review task exhausted max iterations sessionId={} taskId={} reviewer={} maxIterations={} collectedFindings={}",
+                sessionId,
+                reviewTask.taskId(),
+                agentDefinition.agentName(),
+                maxIterations,
+                collectedFindings.size()
+        );
         return partialResult(sessionId, collectedFindings.values());
     }
 
-    private List<LlmMessage> compactIfNeeded(List<LlmMessage> messages, ContextPack contextPack) {
-        int promptBudget = Math.max(contextPack.tokenBudget().totalTokens() - contextPack.tokenBudget().reservedTokens(), 0);
-        ContextGovernor.CompactionResult compactionResult = contextGovernor.compact(messages, promptBudget);
-        if (!compactionResult.withinBudget()) {
-            return null;
-        }
-        return compactionResult.messages();
+    private ContextGovernor.CompactionResult compactIfNeeded(List<LlmMessage> messages, ContextPack contextPack) {
+        return contextGovernor.compact(messages, promptBudget(contextPack));
+    }
+
+    private int promptBudget(ContextPack contextPack) {
+        return Math.max(contextPack.tokenBudget().totalTokens() - contextPack.tokenBudget().reservedTokens(), 0);
     }
 
     private ReviewResult partialResult(String sessionId, Iterable<Finding> findings) {
@@ -188,6 +289,12 @@ public final class ReviewEngine {
                 + finding.category()
                 + ":"
                 + finding.title();
+    }
+
+    private List<String> toolNames(List<ToolCall> toolCalls) {
+        return toolCalls.stream()
+                .map(ToolCall::toolName)
+                .toList();
     }
 
     private LlmMessage toAssistantToolCallMessage(List<ToolCall> toolCalls) {

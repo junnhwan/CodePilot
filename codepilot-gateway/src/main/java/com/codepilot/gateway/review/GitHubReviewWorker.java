@@ -156,13 +156,37 @@ public class GitHubReviewWorker {
 
     @Scheduled(fixedDelayString = "${codepilot.gateway.worker-delay:2000}")
     public void processPendingEvents() {
-        for (RedisStreamReviewEventBuffer.BufferedReviewEvent bufferedEvent : eventBuffer.readPending(10)) {
+        List<RedisStreamReviewEventBuffer.BufferedReviewEvent> pendingEvents = eventBuffer.readPending(10);
+        if (pendingEvents.isEmpty()) {
+            return;
+        }
+        LOGGER.info("Read pending GitHub review events count={}", pendingEvents.size());
+        for (RedisStreamReviewEventBuffer.BufferedReviewEvent bufferedEvent : pendingEvents) {
+            LOGGER.info(
+                    "Processing GitHub review event messageId={} sessionId={} repository={} prNumber={} headSha={}",
+                    bufferedEvent.messageId(),
+                    bufferedEvent.event().sessionId(),
+                    bufferedEvent.event().projectId(),
+                    bufferedEvent.event().prNumber(),
+                    bufferedEvent.event().headSha()
+            );
             try {
                 process(bufferedEvent.event());
+                LOGGER.info(
+                        "Processed GitHub review event successfully sessionId={} repository={} prNumber={}",
+                        bufferedEvent.event().sessionId(),
+                        bufferedEvent.event().projectId(),
+                        bufferedEvent.event().prNumber()
+                );
             } catch (Exception exception) {
                 fail(bufferedEvent.event(), exception);
             } finally {
                 eventBuffer.remove(bufferedEvent.messageId());
+                LOGGER.info(
+                        "Removed GitHub review event from buffer messageId={} sessionId={}",
+                        bufferedEvent.messageId(),
+                        bufferedEvent.event().sessionId()
+                );
             }
         }
     }
@@ -171,11 +195,21 @@ public class GitHubReviewWorker {
         SessionStore.RestoredSession restored = sessionStore.restore(event.sessionId())
                 .orElseThrow(() -> new IllegalStateException("Missing ReviewSession %s".formatted(event.sessionId())));
         ReviewSession session = restored.session();
+        LOGGER.info(
+                "Restored review session sessionId={} state={} hasPlan={} completedTaskResults={} hasReviewResult={}",
+                event.sessionId(),
+                session.state(),
+                session.reviewPlan() != null,
+                restored.completedTaskResults().size(),
+                session.reviewResult() != null
+        );
         if (session.state() == AgentState.DONE) {
+            LOGGER.info("Skipping processing because session is already DONE sessionId={}", event.sessionId());
             sseBroadcaster.complete(event.sessionId());
             return;
         }
         if (session.state() == AgentState.FAILED) {
+            LOGGER.warn("Refusing to process session already marked FAILED sessionId={}", event.sessionId());
             throw new IllegalStateException("ReviewSession %s is already failed".formatted(event.sessionId()));
         }
 
@@ -188,11 +222,29 @@ public class GitHubReviewWorker {
                 || session.state() == AgentState.PLANNING
                 || (session.state() == AgentState.REVIEWING
                 && (session.reviewPlan() == null || hasRemainingTasks))) {
+            LOGGER.info(
+                    "Fetching pull request diff sessionId={} repository={} prNumber={}",
+                    event.sessionId(),
+                    event.projectId(),
+                    event.prNumber()
+            );
             rawDiff = pullRequestClient.fetchPullRequestDiff(event.owner(), event.repository(), event.prNumber());
+            LOGGER.info(
+                    "Fetched pull request diff sessionId={} diffChars={}",
+                    event.sessionId(),
+                    rawDiff.length()
+            );
         }
 
         if (session.state() == AgentState.IDLE) {
             ReviewPlan reviewPlan = new PlanningAgent(diffAnalyzer).plan(event.sessionId(), rawDiff);
+            LOGGER.info(
+                    "Created review plan from IDLE sessionId={} planId={} strategy={} taskCount={}",
+                    event.sessionId(),
+                    reviewPlan.planId(),
+                    reviewPlan.strategy(),
+                    reviewPlan.taskGraph().allTasks().size()
+            );
             session = session.startPlanning(reviewPlan.diffSummary(), Instant.now());
             reviewSessionRepository.save(session);
         }
@@ -201,6 +253,13 @@ public class GitHubReviewWorker {
             ReviewPlan reviewPlan = new PlanningAgent(diffAnalyzer).plan(event.sessionId(), rawDiff);
             session = session.attachPlan(reviewPlan, Instant.now());
             reviewSessionRepository.save(session);
+            LOGGER.info(
+                    "Attached review plan sessionId={} planId={} strategy={} taskCount={}",
+                    event.sessionId(),
+                    reviewPlan.planId(),
+                    reviewPlan.strategy(),
+                    reviewPlan.taskGraph().allTasks().size()
+            );
             sseBroadcaster.publish(event.sessionId(), "plan_ready", Map.of(
                     "planId", reviewPlan.planId(),
                     "taskCount", reviewPlan.taskGraph().allTasks().size(),
@@ -211,6 +270,11 @@ public class GitHubReviewWorker {
         if (session.state() == AgentState.PLANNING) {
             session = session.startReviewing(Instant.now());
             reviewSessionRepository.save(session);
+            LOGGER.info(
+                    "Session entered REVIEWING sessionId={} remainingTasks={}",
+                    event.sessionId(),
+                    remainingTaskCount(session.reviewPlan())
+            );
         }
 
         ReviewResult reviewResult = session.reviewResult();
@@ -222,13 +286,28 @@ public class GitHubReviewWorker {
             }
 
             if (hasRemainingTasks(effectivePlan)) {
-                Path repoRoot = materializeWorkspace(event, pullRequestClient.fetchPullRequestFiles(
+                List<GitHubPullRequestClient.PullRequestFileSnapshot> snapshots = pullRequestClient.fetchPullRequestFiles(
                         event.owner(),
                         event.repository(),
                         event.prNumber(),
                         event.headSha()
-                ));
+                );
+                LOGGER.info(
+                        "Fetched pull request file snapshots sessionId={} fileCount={} remainingTasks={} seedResults={}",
+                        event.sessionId(),
+                        snapshots.size(),
+                        remainingTaskCount(effectivePlan),
+                        restored.completedTaskResults().size()
+                );
+                Path repoRoot = materializeWorkspace(event, snapshots);
                 try {
+                    LOGGER.info(
+                            "Executing review plan sessionId={} workspace={} patterns={} conventions={}",
+                            event.sessionId(),
+                            repoRoot,
+                            projectMemory.reviewPatterns().size(),
+                            projectMemory.teamConventions().size()
+                    );
                     reviewResult = buildReviewOrchestrator(repoRoot, event.projectId()).execute(
                             effectivePlan,
                             repoRoot,
@@ -243,22 +322,41 @@ public class GitHubReviewWorker {
                             restored.completedTaskResults(),
                             new GatewayListener(event.sessionId())
                     ).reviewResult();
+                    LOGGER.info(
+                            "Review execution completed sessionId={} findingCount={} partial={}",
+                            event.sessionId(),
+                            reviewResult.findings().size(),
+                            reviewResult.partial()
+                    );
                 } finally {
                     deleteWorkspace(repoRoot);
                 }
             } else {
+                LOGGER.info(
+                        "All review tasks already terminal; merging restored task results sessionId={} completedTaskResults={}",
+                        event.sessionId(),
+                        restored.completedTaskResults().size()
+                );
                 reviewResult = new MergeAgent().merge(event.sessionId(), restored.completedTaskResults());
             }
             session = session.startMerging(Instant.now());
             reviewSessionRepository.save(session);
+            LOGGER.info("Session advanced to MERGING sessionId={}", event.sessionId());
         }
 
         if (session.state() == AgentState.MERGING) {
             reviewResult = reviewResult == null
                     ? new MergeAgent().merge(event.sessionId(), restored.completedTaskResults())
                     : reviewResult;
+            LOGGER.info(
+                    "Merged review result sessionId={} findingCount={} partial={}",
+                    event.sessionId(),
+                    reviewResult.findings().size(),
+                    reviewResult.partial()
+            );
             session = session.startReporting(reviewResult, Instant.now());
             reviewSessionRepository.save(session);
+            LOGGER.info("Session advanced to REPORTING sessionId={}", event.sessionId());
         }
 
         if (session.state() == AgentState.REPORTING) {
@@ -267,7 +365,20 @@ public class GitHubReviewWorker {
                 throw new IllegalStateException("ReviewSession %s cannot report without ReviewResult"
                         .formatted(event.sessionId()));
             }
+            LOGGER.info(
+                    "Writing GitHub review comments sessionId={} repository={} prNumber={} findingCount={}",
+                    event.sessionId(),
+                    event.projectId(),
+                    event.prNumber(),
+                    reviewResult.findings().size()
+            );
             commentWriter.writeReview(event, reviewResult);
+            LOGGER.info(
+                    "GitHub review comments written sessionId={} repository={} prNumber={}",
+                    event.sessionId(),
+                    event.projectId(),
+                    event.prNumber()
+            );
             session = session.markDone(reviewResult, Instant.now());
             reviewSessionRepository.save(session);
             sseBroadcaster.publish(event.sessionId(), "review_completed", Map.of(
@@ -276,6 +387,12 @@ public class GitHubReviewWorker {
                     "partial", reviewResult.partial()
             ));
             sseBroadcaster.complete(event.sessionId());
+            LOGGER.info(
+                    "Review session completed sessionId={} findingCount={} partial={}",
+                    event.sessionId(),
+                    reviewResult.findings().size(),
+                    reviewResult.partial()
+            );
             dreamSafely(event.projectId(), reviewResult);
         }
     }
@@ -285,6 +402,13 @@ public class GitHubReviewWorker {
     }
 
     private void fail(GitHubPullRequestEvent event, Exception exception) {
+        LOGGER.error(
+                "GitHub review processing failed sessionId={} repository={} prNumber={} stateTransition=FAILED",
+                event.sessionId(),
+                event.projectId(),
+                event.prNumber(),
+                exception
+        );
         reviewSessionRepository.findById(event.sessionId()).ifPresent(session -> {
             ReviewSession failed = session.state().terminal()
                     ? session
@@ -331,7 +455,14 @@ public class GitHubReviewWorker {
 
     private void dreamSafely(String projectId, ReviewResult reviewResult) {
         try {
-            dreamService.dream(projectId, reviewResult);
+            ProjectMemory updated = dreamService.dream(projectId, reviewResult);
+            LOGGER.info(
+                    "Dream persistence completed projectId={} sessionId={} patterns={} conventions={}",
+                    projectId,
+                    reviewResult.sessionId(),
+                    updated.reviewPatterns().size(),
+                    updated.teamConventions().size()
+            );
         } catch (RuntimeException exception) {
             LOGGER.warn(
                     "Dream persistence failed for projectId={} sessionId={}",
@@ -344,6 +475,13 @@ public class GitHubReviewWorker {
 
     private void appendEvent(String sessionId, SessionEvent.Type type, Map<String, Object> payload) {
         reviewSessionRepository.append(SessionEvent.of(sessionId, type, Instant.now(), payload));
+    }
+
+    private int remainingTaskCount(ReviewPlan reviewPlan) {
+        if (reviewPlan == null) {
+            return 0;
+        }
+        return (int) reviewPlan.taskGraph().allTasks().stream().filter(task -> !task.isTerminal()).count();
     }
 
     private Path materializeWorkspace(
@@ -411,6 +549,15 @@ public class GitHubReviewWorker {
 
         @Override
         public void onFindingReported(com.codepilot.core.domain.plan.ReviewTask reviewTask, Finding finding) {
+            LOGGER.info(
+                    "Finding reported sessionId={} taskId={} severity={} file={} line={} title={}",
+                    sessionId,
+                    reviewTask.taskId(),
+                    finding.severity(),
+                    finding.location().filePath(),
+                    finding.location().startLine(),
+                    finding.title()
+            );
             appendEvent(sessionId, SessionEvent.Type.FINDING_REPORTED, Map.ofEntries(
                     Map.entry("findingId", finding.findingId()),
                     Map.entry("taskId", reviewTask.taskId()),
@@ -436,6 +583,14 @@ public class GitHubReviewWorker {
 
         @Override
         public void onTaskCompleted(com.codepilot.core.domain.plan.ReviewTask reviewTask, ReviewResult reviewResult) {
+            LOGGER.info(
+                    "Review task completed sessionId={} taskId={} type={} findingCount={} partial={}",
+                    sessionId,
+                    reviewTask.taskId(),
+                    reviewTask.type(),
+                    reviewResult.findings().size(),
+                    reviewResult.partial()
+            );
             appendEvent(sessionId, SessionEvent.Type.TASK_COMPLETED, Map.of(
                     "taskId", reviewTask.taskId(),
                     "type", reviewTask.type().name(),

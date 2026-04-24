@@ -9,6 +9,8 @@ import com.codepilot.core.domain.plan.ReviewTask;
 import com.codepilot.core.domain.plan.TaskGraph;
 import com.codepilot.core.domain.review.Finding;
 import com.codepilot.core.domain.review.ReviewResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -20,6 +22,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 public final class ReviewOrchestrator {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ReviewOrchestrator.class);
 
     private static final Executor DEFAULT_EXECUTOR = Executors.newThreadPerTaskExecutor(
             Thread.ofVirtual().name("codepilot-review-", 0).factory()
@@ -144,8 +148,28 @@ public final class ReviewOrchestrator {
         String sessionId = reviewPlan.sessionId();
         TaskGraph taskGraph = reviewPlan.taskGraph();
         List<ReviewResult> taskResults = new ArrayList<>(seedResults);
+        LOGGER.info(
+                "Starting review orchestration sessionId={} planId={} strategy={} totalTasks={} seedResults={}",
+                sessionId,
+                reviewPlan.planId(),
+                reviewPlan.strategy(),
+                taskGraph.allTasks().size(),
+                taskResults.size()
+        );
         if (taskGraph.allTasks().stream().noneMatch(task -> !task.isTerminal())) {
-            return new RunResult(reviewPlan, mergeAgent.merge(sessionId, taskResults));
+            LOGGER.info(
+                    "All review tasks already terminal before orchestration sessionId={} seedResults={}",
+                    sessionId,
+                    taskResults.size()
+            );
+            ReviewResult mergedResult = mergeAgent.merge(sessionId, taskResults);
+            LOGGER.info(
+                    "Merged orchestration result without rerunning tasks sessionId={} findingCount={} partial={}",
+                    sessionId,
+                    mergedResult.findings().size(),
+                    mergedResult.partial()
+            );
+            return new RunResult(reviewPlan, mergedResult);
         }
 
         ContextPack contextPack = contextCompiler.compile(
@@ -154,12 +178,29 @@ public final class ReviewOrchestrator {
                 projectMemory == null ? ProjectMemory.empty(sessionId) : projectMemory,
                 structuredFacts == null ? Map.of() : structuredFacts
         );
+        LOGGER.info(
+                "Compiled review context sessionId={} snippets={} patterns={} conventions={} globalKnowledge={} tokenUsage={}/{} reserved={}",
+                sessionId,
+                contextPack.snippets().size(),
+                contextPack.projectMemory().reviewPatterns().size(),
+                contextPack.projectMemory().teamConventions().size(),
+                contextPack.globalKnowledge().size(),
+                contextPack.tokenBudget().usedTokens(),
+                contextPack.tokenBudget().totalTokens(),
+                contextPack.tokenBudget().reservedTokens()
+        );
 
         while (taskGraph.allTasks().stream().anyMatch(task -> !task.isTerminal())) {
             List<ReviewTask> availableTasks = taskGraph.availableTasks();
             if (availableTasks.isEmpty()) {
                 throw new IllegalStateException("ReviewPlan[%s] has no schedulable tasks remaining".formatted(reviewPlan.planId()));
             }
+            LOGGER.info(
+                "Dispatching review wave sessionId={} readyTasks={} remainingTasks={}",
+                sessionId,
+                summarizeTasks(availableTasks),
+                remainingTaskCount(taskGraph)
+            );
 
             List<CompletableFuture<TaskExecution>> futures = availableTasks.stream()
                     .map(reviewTask -> CompletableFuture.supplyAsync(
@@ -180,10 +221,25 @@ public final class ReviewOrchestrator {
                 }
                 taskGraph = taskGraph.replace(taskExecution.completedTask());
                 taskResults.add(taskExecution.reviewResult());
+                LOGGER.info(
+                        "Collected review task result sessionId={} taskId={} findings={} partial={}",
+                        sessionId,
+                        taskExecution.completedTask().taskId(),
+                        taskExecution.reviewResult().findings().size(),
+                        taskExecution.reviewResult().partial()
+                );
             }
         }
 
-        return new RunResult(reviewPlan, mergeAgent.merge(sessionId, taskResults));
+        ReviewResult mergedResult = mergeAgent.merge(sessionId, taskResults);
+        LOGGER.info(
+                "Merged orchestration result sessionId={} taskResultCount={} findingCount={} partial={}",
+                sessionId,
+                taskResults.size(),
+                mergedResult.findings().size(),
+                mergedResult.partial()
+        );
+        return new RunResult(reviewPlan, mergedResult);
     }
 
     private TaskExecution executeTask(
@@ -220,6 +276,16 @@ public final class ReviewOrchestrator {
         ReviewTask completedTask = startedTask.complete();
         listener.onTaskCompleted(completedTask, reviewResult);
         return new TaskExecution(completedTask, reviewResult);
+    }
+
+    private int remainingTaskCount(TaskGraph taskGraph) {
+        return (int) taskGraph.allTasks().stream().filter(task -> !task.isTerminal()).count();
+    }
+
+    private List<String> summarizeTasks(List<ReviewTask> reviewTasks) {
+        return reviewTasks.stream()
+                .map(task -> task.taskId() + ":" + task.type())
+                .toList();
     }
 
     public record RunResult(

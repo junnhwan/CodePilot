@@ -4,6 +4,8 @@ import com.codepilot.gateway.github.GitHubPullRequestWebhookPayload;
 import com.codepilot.gateway.github.GitHubWebhookVerifier;
 import com.codepilot.gateway.review.GitHubWebhookIntakeService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -15,6 +17,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/v1/webhook")
 public class WebhookReceiver {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(WebhookReceiver.class);
 
     private final ObjectMapper objectMapper;
 
@@ -39,15 +43,25 @@ public class WebhookReceiver {
             @RequestBody String payload
     ) throws Exception {
         if (!"pull_request".equalsIgnoreCase(githubEvent)) {
+            LOGGER.info("Ignoring unsupported GitHub webhook eventType={}", githubEvent);
             return ResponseEntity.ok(new WebhookResponse(GitHubWebhookIntakeService.IntakeStatus.IGNORED.name(), null));
         }
         if (!webhookVerifier.verify(payload, signature)) {
+            LOGGER.warn("Rejected GitHub webhook because signature verification failed eventType={}", githubEvent);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new WebhookResponse("INVALID_SIGNATURE", null));
         }
 
         GitHubPullRequestWebhookPayload request = objectMapper.readValue(payload, GitHubPullRequestWebhookPayload.class);
         GitHubWebhookIntakeService.IntakeResult result = intakeService.accept(request);
+        LOGGER.info(
+                "Processed GitHub pull_request webhook action={} repository={} prNumber={} status={} sessionId={}",
+                request.action(),
+                request.repository() == null ? "unknown" : request.repository().fullName(),
+                request.pullRequest() == null ? null : request.pullRequest().number(),
+                result.status(),
+                result.sessionId()
+        );
         HttpStatus status = result.status() == GitHubWebhookIntakeService.IntakeStatus.ACCEPTED
                 ? HttpStatus.ACCEPTED
                 : HttpStatus.OK;

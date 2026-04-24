@@ -524,6 +524,25 @@
   - `2026-04-24` 以 `SERVER_PORT=18081`、`OPENAI_BASE_URL`、`OPENAI_API_KEY`、`CODEPILOT_REDIS_URL`、`CODEPILOT_REDIS_USERNAME`、`CODEPILOT_REDIS_PASSWORD`、`GITHUB_API_TOKEN`、`GITHUB_WEBHOOK_SECRET` 启动 `java -jar codepilot-gateway\\target\\codepilot-gateway-0.1.0-SNAPSHOT.jar`，日志确认进入 `Tomcat started on port 18081` 与 `Started CodePilotGatewayApplication`
   - `2026-04-24` 若 Redis 地址不可达，运行期任务与 `/actuator/health` 仍会因 Redis 连接失败显示 `DOWN`；该现象属于环境依赖未就绪，而不是 Gateway 启动主链失败
 
+### 补充修复：Gateway 联调关键链路日志观测
+
+- 目标
+  - 为本地联调补齐最小可用的运行日志，让 IDE 控制台能直接观察 `Webhook -> Intake -> Worker -> Orchestrator -> ReviewEngine -> Report` 主链推进和失败位置
+  - 保持现有 review 主链不重写，只在关键边界补高信号 `INFO/WARN/ERROR` 日志，避免无意义刷屏
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `codepilot-gateway` 的 `WebhookReceiver` 与 `GitHubWebhookIntakeService` 已补齐入口日志，能看到 GitHub `pull_request` webhook 的 `action / repo / pr / status / sessionId`，以及验签失败、非 reviewable action、重复 webhook 的判定结果
+  - `codepilot-gateway` 的 `GitHubReviewWorker` 已补齐 worker 侧阶段日志：待处理事件读取、session 恢复、diff 拉取、plan 附着、workspace 物化、review 执行、merge、report、Dream 与失败落点都会在日志中带 `sessionId / repo / prNumber`
+  - `codepilot-core` 的 `ReviewOrchestrator` 已补齐上下文编译与调度摘要日志，能看到 `planId / strategy / readyTasks / remainingTasks / snippets / memory / token budget` 等关键信息
+  - `codepilot-core` 的 `ReviewEngine` 已补齐任务级执行日志，能看到 reviewer 启动、每轮 LLM 决策、tool call 执行、prompt compaction、loop detection、max iterations 与最终 deliver/partial 结果
+  - 当前日志策略保持“失败只在边界统一打栈”，没有在 domain 层引入 noisy logging，也没有改动你本地的 `.env` / `application.yml`
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=ReviewEngineTest,ReviewOrchestratorTest,GitHubReviewWorkerTest,WebhookReceiverTest,GitHubWebhookIntakeServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，定向测试通过，并在测试输出中确认新增日志已覆盖入口、worker、orchestrator、engine 四段关键链路
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓测试通过，`core / gateway / eval / mcp-server / cli` 无回退
+
 ---
 
 ## 延期清单
