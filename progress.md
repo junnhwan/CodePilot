@@ -484,6 +484,25 @@
   - `2026-04-24` 实现后再次执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=SessionStoreTest,ReviewOrchestratorTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P17 定向恢复测试全部通过
   - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 82 个测试全部通过，`core / gateway / eval / mcp-server / cli` 无回退
 
+### Task 5 交付材料打磨（README / 面试 / 博客）
+
+- 目标
+  - 把当前仓库已经完成的系统能力整理成对外可解释材料，服务 README、面试和博客复盘
+  - 保持“仓库真相优先”，不把设计文档里的示例指标误写成当前已经跑出的真实结果
+- 优先级
+  - `P2`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - 新增根目录 `README.md`，补齐项目定位、模块结构、当前完成度、CLI / Gateway / Eval / MCP 的运行方式，以及 `progress.md` / 架构文档 / 交付材料的索引入口
+  - 新增 `docs/interview/codepilot-project-story.md`，收敛“项目定位 -> 演进叙事 -> 四个必聊问题 -> 仓库真相证据 -> 面试中不要说错的点”的标准故事线
+  - 新增 `docs/blog/codepilot-eval-and-context-engineering.md`，聚焦 `P10 -> P13` 的评测演进，解释为什么要把 Eval Center 和 token efficiency 当成一等工程问题
+  - 文档内容显式对齐当前实现：只写已存在的模块、命令、baseline、默认 scenario pack 和接口，不跨到未落地能力
+- 验收结果
+  - `2026-04-24` 执行 `git diff --cached --check`，检查通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，确认文档改动未引入仓库回退
+  - `2026-04-24` 提交信息使用 `docs: 补充 CodePilot README 与交付材料`
+
 ---
 
 ## 延期清单
