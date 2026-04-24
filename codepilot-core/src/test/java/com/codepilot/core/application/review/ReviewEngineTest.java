@@ -56,6 +56,7 @@ class ReviewEngineTest {
                 """);
 
         ToolRegistry toolRegistry = new ToolRegistry(List.of(new ReadFileTool(repoRoot)));
+        TokenCounter tokenCounter = new TokenCounter();
         ReviewEngine engine = new ReviewEngine(
                 new StubLlmClient(List.of(
                         new LlmResponse(
@@ -97,7 +98,9 @@ class ReviewEngineTest {
                 toolRegistry,
                 new ToolExecutor(toolRegistry),
                 new ToolCallParser(JsonMapper.builder().findAndAddModules().build()),
-                new TokenCounter(),
+                tokenCounter,
+                new ContextGovernor(tokenCounter),
+                new LoopDetector(),
                 "mock-review-model",
                 Map.of(),
                 4
@@ -120,26 +123,7 @@ class ReviewEngineTest {
                         List.of("Review database access code for injection risks"),
                         List.of()
                 ),
-                new ContextPack(
-                        Map.of("language", "java", "framework", "spring"),
-                        DiffSummary.of(List.of(new DiffSummary.ChangedFile(
-                                "src/main/java/com/example/UserRepository.java",
-                                DiffSummary.ChangeType.MODIFIED,
-                                4,
-                                0,
-                                List.of("UserRepository#findByName")
-                        ))),
-                        new ImpactSet(Set.of("src/main/java/com/example/UserRepository.java"), Set.of(), List.of()),
-                        List.of(new ContextPack.CodeSnippet(
-                                "src/main/java/com/example/UserRepository.java",
-                                3,
-                                5,
-                                "return jdbcTemplate.queryForObject(\"select * from users where name = '\" + name + \"'\", String.class);",
-                                "Changed hunk"
-                        )),
-                        ProjectMemory.empty("project-alpha"),
-                        new ContextPack.TokenBudget(8000, 1000, 320)
-                )
+                contextPack("src/main/java/com/example/UserRepository.java", 8000, 1000)
         );
 
         assertThat(reviewResult.partial()).isFalse();
@@ -149,6 +133,229 @@ class ReviewEngineTest {
         assertThat(reviewResult.findings().getFirst().severity()).isEqualTo(Severity.HIGH);
         assertThat(reviewResult.findings().getFirst().location().filePath())
                 .isEqualTo("src/main/java/com/example/UserRepository.java");
+    }
+
+    @Test
+    void compactsConversationBeforeNextLlmCallWhenPromptBudgetIsExceeded() throws IOException {
+        Path largeFile = repoRoot.resolve("A.java");
+        Files.createDirectories(largeFile.getParent());
+        Files.writeString(largeFile, "A".repeat(1200));
+
+        Path smallFile = repoRoot.resolve("B.java");
+        Files.writeString(smallFile, "safe-query");
+
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(new ReadFileTool(repoRoot)));
+        TokenCounter tokenCounter = new TokenCounter();
+        StubLlmClient llmClient = new StubLlmClient(List.of(
+                new LlmResponse(
+                        "",
+                        List.of(new ToolCallInResponse(
+                                "call-1",
+                                "read_file",
+                                Map.of("file_path", "A.java")
+                        )),
+                        new LlmUsage(90, 18, 108),
+                        "tool_calls"
+                ),
+                new LlmResponse(
+                        "",
+                        List.of(new ToolCallInResponse(
+                                "call-2",
+                                "read_file",
+                                Map.of("file_path", "B.java")
+                        )),
+                        new LlmUsage(98, 20, 118),
+                        "tool_calls"
+                ),
+                new LlmResponse(
+                        """
+                        {
+                          "decision": "DELIVER",
+                          "findings": []
+                        }
+                        """,
+                        List.of(),
+                        new LlmUsage(72, 12, 84),
+                        "stop"
+                )
+        ));
+        ReviewEngine engine = new ReviewEngine(
+                llmClient,
+                toolRegistry,
+                new ToolExecutor(toolRegistry),
+                new ToolCallParser(JsonMapper.builder().findAndAddModules().build()),
+                tokenCounter,
+                new ContextGovernor(tokenCounter),
+                new LoopDetector(),
+                "mock-review-model",
+                Map.of(),
+                5
+        );
+
+        ReviewResult reviewResult = engine.execute(
+                "session-compact",
+                securityAgent(),
+                ReviewTask.pending(
+                        "task-compact",
+                        ReviewTask.TaskType.SECURITY,
+                        ReviewTask.Priority.HIGH,
+                        List.of("A.java"),
+                        List.of("Check"),
+                        List.of()
+                ),
+                new ContextPack(
+                        Map.of("language", "java"),
+                        DiffSummary.of(List.of(new DiffSummary.ChangedFile(
+                                "A.java",
+                                DiffSummary.ChangeType.MODIFIED,
+                                1,
+                                0,
+                                List.of("A#m")
+                        ))),
+                        new ImpactSet(Set.of("A.java"), Set.of(), List.of()),
+                        List.of(new ContextPack.CodeSnippet(
+                                "A.java",
+                                1,
+                                1,
+                                "x",
+                                "Changed hunk"
+                        )),
+                        ProjectMemory.empty("project-alpha"),
+                        new ContextPack.TokenBudget(530, 40, 120)
+                )
+        );
+
+        assertThat(reviewResult.partial()).isFalse();
+        assertThat(llmClient.capturedRequests()).hasSize(3);
+        LlmRequest compactedRequest = llmClient.capturedRequests().get(2);
+        assertThat(tokenCounter.countMessages(compactedRequest.messages())).isLessThanOrEqualTo(490);
+        assertThat(compactedRequest.messages().stream()
+                .filter(message -> "tool".equals(message.role()))
+                .map(LlmMessage::content))
+                .anyMatch(content -> content.contains("call-2"));
+        assertThat(compactedRequest.messages().stream()
+                .filter(message -> "tool".equals(message.role()))
+                .map(LlmMessage::content))
+                .noneMatch(content -> content.contains("call-1"));
+    }
+
+    @Test
+    void degradesToPartialResultWhenRepeatedToolCallsTriggerLoopDetection() throws IOException {
+        Path sourceFile = repoRoot.resolve("src/main/java/com/example/UserRepository.java");
+        Files.createDirectories(sourceFile.getParent());
+        Files.writeString(sourceFile, "class UserRepository {}");
+
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(new ReadFileTool(repoRoot)));
+        TokenCounter tokenCounter = new TokenCounter();
+        StubLlmClient llmClient = new StubLlmClient(List.of(
+                repeatedToolCallResponse(),
+                repeatedToolCallResponse(),
+                repeatedToolCallResponse()
+        ));
+        ReviewEngine engine = new ReviewEngine(
+                llmClient,
+                toolRegistry,
+                new ToolExecutor(toolRegistry),
+                new ToolCallParser(JsonMapper.builder().findAndAddModules().build()),
+                tokenCounter,
+                new ContextGovernor(tokenCounter),
+                new LoopDetector(3),
+                "mock-review-model",
+                Map.of(),
+                6
+        );
+
+        ReviewResult reviewResult = engine.execute(
+                "session-loop",
+                securityAgent(),
+                reviewTask("task-loop", "src/main/java/com/example/UserRepository.java"),
+                contextPack("src/main/java/com/example/UserRepository.java", 8000, 1000)
+        );
+
+        assertThat(reviewResult.partial()).isTrue();
+        assertThat(reviewResult.findings()).hasSize(1);
+        assertThat(reviewResult.findings().getFirst().title()).isEqualTo("Potential SQL injection risk");
+        assertThat(llmClient.capturedRequests()).hasSize(3);
+    }
+
+    private static LlmResponse repeatedToolCallResponse() {
+        return new LlmResponse(
+                """
+                {
+                  "decision": "CALL_TOOL",
+                  "tool_calls": [
+                    {
+                      "tool": "read_file",
+                      "arguments": {
+                        "file_path": "src/main/java/com/example/UserRepository.java"
+                      }
+                    }
+                  ],
+                  "findings": [
+                    {
+                      "file": "src/main/java/com/example/UserRepository.java",
+                      "line": 1,
+                      "severity": "HIGH",
+                      "confidence": 0.91,
+                      "category": "security",
+                      "title": "Potential SQL injection risk",
+                      "description": "The repository still needs verification of input handling.",
+                      "suggestion": "Review how user input reaches the query layer.",
+                      "evidence": [
+                        "The agent keeps asking for the same repository file."
+                      ]
+                    }
+                  ]
+                }
+                """,
+                List.of(),
+                new LlmUsage(84, 30, 114),
+                "stop"
+        );
+    }
+
+    private static AgentDefinition securityAgent() {
+        return new AgentDefinition(
+                "security-reviewer",
+                "Review changed code for security flaws",
+                Set.of(AgentState.REVIEWING),
+                Set.of(AgentDecision.Type.CALL_TOOL, AgentDecision.Type.DELIVER),
+                List.of("SQL injection", "unsafe input handling")
+        );
+    }
+
+    private static ReviewTask reviewTask(String taskId, String targetFile) {
+        return ReviewTask.pending(
+                taskId,
+                ReviewTask.TaskType.SECURITY,
+                ReviewTask.Priority.HIGH,
+                List.of(targetFile),
+                List.of("Review database access code for injection risks"),
+                List.of()
+        );
+    }
+
+    private static ContextPack contextPack(String targetFile, int totalTokens, int reservedTokens) {
+        return new ContextPack(
+                Map.of("language", "java", "framework", "spring"),
+                DiffSummary.of(List.of(new DiffSummary.ChangedFile(
+                        targetFile,
+                        DiffSummary.ChangeType.MODIFIED,
+                        4,
+                        0,
+                        List.of("UserRepository#findByName")
+                ))),
+                new ImpactSet(Set.of(targetFile), Set.of(), List.of()),
+                List.of(new ContextPack.CodeSnippet(
+                        targetFile,
+                        1,
+                        3,
+                        "return jdbcTemplate.queryForObject(\"select * from users where name = ?\", String.class);",
+                        "Changed hunk"
+                )),
+                ProjectMemory.empty("project-alpha"),
+                new ContextPack.TokenBudget(totalTokens, reservedTokens, Math.min(320, totalTokens))
+        );
     }
 
     private static final class StubLlmClient implements LlmClient {
@@ -172,6 +379,10 @@ class ReviewEngineTest {
         @Override
         public Flux<LlmChunk> stream(LlmRequest request) {
             throw new UnsupportedOperationException("stream is not used in this test");
+        }
+
+        private List<LlmRequest> capturedRequests() {
+            return List.copyOf(capturedRequests);
         }
     }
 }

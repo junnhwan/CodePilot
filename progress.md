@@ -222,7 +222,18 @@
 - 优先级
   - `P1`
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 新增 `ContextGovernor`，落地 `Microcompact + HistorySnipping + OrphanCleanup` 三段式消息治理；优先压缩旧 Tool 结果，再按轮次裁剪历史，最后清理失配消息
+  - `codepilot-core` 新增 `LoopDetector`，先基于连续重复 Tool signature 做 pattern 检测，并预留 `LoopJudge` 小模型判定接入点，当前默认只走 pattern 模式
+  - `ReviewEngine` 升级为治理版循环：每轮 LLM 调用前执行 token 预算检查和上下文压缩；连续重复 Tool 调用或预算无法收敛时返回 `partial=true` 的降级结果；同时累积并去重 partial findings，避免循环时重复上报
+  - `ReviewEngine` 追加标准化的 assistant/tool 历史消息格式，保证 `ContextGovernor` 和 `LoopDetector` 能基于统一消息协议工作，不提前引入 P8 的多 Agent / NEED_CONTEXT 分支
+  - 新增 P7 定向测试：`ContextGovernorTest`、`LoopDetectorTest`、`ReviewEngineTest` 扩展，覆盖旧 Tool 结果压缩、历史轮次裁剪、孤儿消息清理、预算治理和 loop 降级返回 partial findings
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=ContextGovernorTest,LoopDetectorTest,ReviewEngineTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P7 review 核心定向测试 8 项全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-cli,codepilot-gateway -am "-Dtest=LocalReviewRunnerTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，受影响 CLI / Gateway 链路测试全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 43 个测试全部通过
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示工作区 LF/CRLF 转换警告，无格式错误）
 
 ### P8 Multi-Agent + Planning
 

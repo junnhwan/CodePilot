@@ -17,8 +17,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 public final class ReviewEngine {
 
@@ -31,6 +33,10 @@ public final class ReviewEngine {
     private final ToolCallParser toolCallParser;
 
     private final TokenCounter tokenCounter;
+
+    private final ContextGovernor contextGovernor;
+
+    private final LoopDetector loopDetector;
 
     private final String model;
 
@@ -48,11 +54,39 @@ public final class ReviewEngine {
             Map<String, Object> llmParams,
             int maxIterations
     ) {
+        this(
+                llmClient,
+                toolRegistry,
+                toolExecutor,
+                toolCallParser,
+                tokenCounter,
+                new ContextGovernor(tokenCounter),
+                new LoopDetector(),
+                model,
+                llmParams,
+                maxIterations
+        );
+    }
+
+    public ReviewEngine(
+            LlmClient llmClient,
+            ToolRegistry toolRegistry,
+            ToolExecutor toolExecutor,
+            ToolCallParser toolCallParser,
+            TokenCounter tokenCounter,
+            ContextGovernor contextGovernor,
+            LoopDetector loopDetector,
+            String model,
+            Map<String, Object> llmParams,
+            int maxIterations
+    ) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.toolExecutor = toolExecutor;
         this.toolCallParser = toolCallParser;
         this.tokenCounter = tokenCounter;
+        this.contextGovernor = contextGovernor;
+        this.loopDetector = loopDetector;
         this.model = model;
         this.llmParams = llmParams == null ? Map.of() : Map.copyOf(llmParams);
         this.maxIterations = maxIterations;
@@ -67,26 +101,37 @@ public final class ReviewEngine {
         List<LlmMessage> messages = new ArrayList<>();
         messages.add(ReviewPromptTemplates.systemMessage(agentDefinition, reviewTask, contextPack, toolRegistry.toolDefinitions()));
         messages.add(ReviewPromptTemplates.userMessage(reviewTask, contextPack));
+        Map<String, Finding> collectedFindings = new LinkedHashMap<>();
 
         for (int iteration = 0; iteration < maxIterations; iteration++) {
-            requireWithinBudget(messages, contextPack);
+            List<LlmMessage> promptMessages = compactIfNeeded(messages, contextPack);
+            if (promptMessages == null) {
+                return partialResult(sessionId, collectedFindings.values());
+            }
+            messages = new ArrayList<>(promptMessages);
+
             var response = llmClient.chat(new LlmRequest(model, List.copyOf(messages), toolRegistry.toolDefinitions(), llmParams));
             List<ToolCall> toolCalls = toolCallParser.parse(response);
 
             if (!toolCalls.isEmpty()) {
-                appendAssistantMessage(messages, response.content());
+                collectFindings(collectedFindings, tryParseStructuredContent(response.content()), reviewTask);
+                messages.add(toAssistantToolCallMessage(toolCalls));
                 List<ToolResult> toolResults = toolExecutor.executeAll(toolCalls);
                 messages.addAll(toToolMessages(toolCalls, toolResults));
+                if (loopDetector.detect(messages).loopDetected()) {
+                    return partialResult(sessionId, collectedFindings.values());
+                }
                 continue;
             }
 
             JsonNode payload = toolCallParser.parseStructuredContent(response.content());
+            collectFindings(collectedFindings, payload, reviewTask);
             String decision = payload == null ? "" : payload.path("decision").asText("");
 
             if ("DELIVER".equalsIgnoreCase(decision)) {
                 return new ReviewResult(
                         sessionId,
-                        extractFindings(payload.path("findings"), reviewTask),
+                        List.copyOf(collectedFindings.values()),
                         false,
                         Instant.now()
                 );
@@ -95,21 +140,65 @@ public final class ReviewEngine {
             throw new IllegalStateException("Unsupported review decision %s for task %s".formatted(decision, reviewTask.taskId()));
         }
 
-        return new ReviewResult(sessionId, List.of(), true, Instant.now());
+        return partialResult(sessionId, collectedFindings.values());
     }
 
-    private void requireWithinBudget(List<LlmMessage> messages, ContextPack contextPack) {
-        int estimatedTokens = tokenCounter.countMessages(messages);
-        if (estimatedTokens > contextPack.tokenBudget().totalTokens()) {
-            throw new IllegalStateException("Estimated prompt tokens %d exceed budget %d"
-                    .formatted(estimatedTokens, contextPack.tokenBudget().totalTokens()));
+    private List<LlmMessage> compactIfNeeded(List<LlmMessage> messages, ContextPack contextPack) {
+        int promptBudget = Math.max(contextPack.tokenBudget().totalTokens() - contextPack.tokenBudget().reservedTokens(), 0);
+        ContextGovernor.CompactionResult compactionResult = contextGovernor.compact(messages, promptBudget);
+        if (!compactionResult.withinBudget()) {
+            return null;
+        }
+        return compactionResult.messages();
+    }
+
+    private ReviewResult partialResult(String sessionId, Iterable<Finding> findings) {
+        List<Finding> collected = new ArrayList<>();
+        findings.forEach(collected::add);
+        return new ReviewResult(sessionId, List.copyOf(collected), true, Instant.now());
+    }
+
+    private JsonNode tryParseStructuredContent(String rawContent) {
+        if (rawContent == null || rawContent.isBlank()) {
+            return null;
+        }
+        try {
+            return toolCallParser.parseStructuredContent(rawContent);
+        } catch (IllegalArgumentException ignored) {
+            return null;
         }
     }
 
-    private void appendAssistantMessage(List<LlmMessage> messages, String content) {
-        if (content != null && !content.isBlank()) {
-            messages.add(new LlmMessage("assistant", content));
+    private void collectFindings(Map<String, Finding> collectedFindings, JsonNode payload, ReviewTask reviewTask) {
+        if (payload == null) {
+            return;
         }
+        for (Finding finding : extractFindings(payload.path("findings"), reviewTask)) {
+            collectedFindings.putIfAbsent(findingKey(finding), finding);
+        }
+    }
+
+    private String findingKey(Finding finding) {
+        return finding.location().filePath()
+                + ":"
+                + finding.location().startLine()
+                + ":"
+                + finding.location().endLine()
+                + ":"
+                + finding.category()
+                + ":"
+                + finding.title();
+    }
+
+    private LlmMessage toAssistantToolCallMessage(List<ToolCall> toolCalls) {
+        StringBuilder builder = new StringBuilder("decision=CALL_TOOL").append(System.lineSeparator());
+        for (ToolCall toolCall : toolCalls) {
+            builder.append("call_id=").append(toolCall.callId()).append(System.lineSeparator());
+            builder.append("signature=").append(toolCall.signature()).append(System.lineSeparator());
+            builder.append("tool=").append(toolCall.toolName()).append(System.lineSeparator());
+            builder.append("arguments=").append(new TreeMap<>(toolCall.arguments())).append(System.lineSeparator());
+        }
+        return new LlmMessage("assistant", builder.toString().trim());
     }
 
     private List<LlmMessage> toToolMessages(List<ToolCall> toolCalls, List<ToolResult> toolResults) {
