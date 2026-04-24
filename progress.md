@@ -353,7 +353,19 @@
 - 优先级
   - `P2`
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-mcp-server` 已从空壳模块收敛为最小可运行 MCP Server：新增 `CodePilotMcpServerApplication`、`CodePilotMcpServerFactory`，基于官方 MCP Java SDK `stdio` transport 暴露 CodePilot 能力，不重写现有 review 主链
+  - 新增 `McpReviewService`，在 `mcp-server` 模块内最小复用现有 `PlanningAgent -> ContextCompiler -> Multi-Agent Review -> Merge` 链路；`review_diff` 直接消费本地 `repo_root + raw_diff`，`review_pr` 通过最小 GitHub PR 读取器拉 diff / head sha / 文件快照后落临时工作区再复用同一 review 主链
+  - 新增 MCP 工具 handler：`review_diff`、`review_pr`、`search_memory`；三者都提供显式参数校验、稳定结构化输出和 `isError=true` 的可定位错误结果，不提前引入平台化抽象或额外插件层
+  - `search_memory` 已对齐 P9 的最小 Project Memory 能力：基于现有 `ProjectMemoryRepository` 聚合读取 `ReviewPattern / TeamConvention`，返回稳定的结构化 match 列表和文本摘要
+  - 新增最小 GitHub PR 读取适配 `com.codepilot.mcp.review.GitHubPullRequestClient`，保持 `mcp-server -> core` 依赖方向不变，不反向依赖 `gateway`
+  - 新增 `logback.xml`，把 MCP Server 运行日志强制打到 `stderr`，避免 `stdio` 协议流被日志污染
+  - 新增 P12 定向测试：`ReviewDiffToolHandlerTest`、`SearchMemoryToolHandlerTest`、`McpReviewServiceTest`、`GitHubPullRequestClientTest`、`CodePilotMcpServerIntegrationTest`，覆盖参数校验、结果结构、GitHub PR 读取和 `stdio` MCP 工具真实可调用闭环
+- 验收结果
+  - `2026-04-24` 执行 `mvn -pl codepilot-mcp-server -am "-Dtest=GitHubPullRequestClientTest,McpReviewServiceTest,ReviewDiffToolHandlerTest,SearchMemoryToolHandlerTest,CodePilotMcpServerIntegrationTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P12 定向测试 7 项全部通过
+  - `2026-04-24` 执行 `mvn test`，全仓 60 个测试全部通过，`core / gateway / eval / mcp-server / cli` 无回退
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
 
 ### P13 评测与量化
 
