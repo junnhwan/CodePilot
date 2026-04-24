@@ -3,6 +3,7 @@ package com.codepilot.gateway.review;
 import com.codepilot.core.application.context.DefaultContextCompiler;
 import com.codepilot.core.application.context.DiffAnalyzer;
 import com.codepilot.core.application.context.ImpactCalculator;
+import com.codepilot.core.application.memory.MemoryService;
 import com.codepilot.core.application.review.TokenCounter;
 import com.codepilot.core.domain.agent.AgentState;
 import com.codepilot.core.domain.llm.LlmClient;
@@ -13,6 +14,8 @@ import com.codepilot.core.domain.llm.LlmResponse;
 import com.codepilot.core.domain.llm.LlmUsage;
 import com.codepilot.core.domain.memory.ProjectMemory;
 import com.codepilot.core.domain.memory.ProjectMemoryRepository;
+import com.codepilot.core.domain.memory.ReviewPattern;
+import com.codepilot.core.domain.memory.TeamConvention;
 import com.codepilot.core.domain.plan.ReviewTask;
 import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
@@ -55,7 +58,37 @@ class GitHubReviewWorkerTest {
         ProjectMemoryRepository projectMemoryRepository = new ProjectMemoryRepository() {
             @Override
             public Optional<ProjectMemory> findByProjectId(String projectId) {
-                return Optional.empty();
+                return Optional.of(ProjectMemory.empty(projectId)
+                        .addPattern(new ReviewPattern(
+                                "pattern-1",
+                                projectId,
+                                ReviewPattern.PatternType.SECURITY_PATTERN,
+                                "Validation missing before repository call",
+                                "Controllers in this project often skip validation before DAO access.",
+                                "repository.findById(request.userId())",
+                                3,
+                                Instant.parse("2026-04-24T00:00:00Z")
+                        ))
+                        .addConvention(new TeamConvention(
+                                "conv-1",
+                                projectId,
+                                TeamConvention.Category.SECURITY,
+                                "Controllers must validate request input before repository access.",
+                                "validator.check(request); repository.findById(request.userId());",
+                                "repository.findById(request.userId()) without validation",
+                                0.96d,
+                                TeamConvention.Source.MANUAL
+                        ))
+                        .addConvention(new TeamConvention(
+                                "conv-2",
+                                projectId,
+                                TeamConvention.Category.FORMAT,
+                                "Use Slf4j instead of direct System.out printing.",
+                                "log.info(\"created\")",
+                                "System.out.println(created)",
+                                0.70d,
+                                TeamConvention.Source.MANUAL
+                        )));
             }
 
             @Override
@@ -124,7 +157,8 @@ class GitHubReviewWorkerTest {
                         new JavaParserAstParser(),
                         new ImpactCalculator(),
                         new TokenCounter(),
-                        new ClasspathCompilationStrategyLoader(objectMapper).load("java-springboot-maven")
+                        new ClasspathCompilationStrategyLoader(objectMapper).load("java-springboot-maven"),
+                        new MemoryService(new TokenCounter())
                 ),
                 objectMapper,
                 new TokenCounter(),
@@ -170,6 +204,16 @@ class GitHubReviewWorkerTest {
         public LlmResponse chat(LlmRequest request) {
             ReviewTask.TaskType taskType = taskType(request.messages());
             seenTaskTypes.add(taskType);
+            if (taskType == ReviewTask.TaskType.SECURITY) {
+                String systemPrompt = request.messages().stream()
+                        .filter(message -> "system".equals(message.role()))
+                        .map(LlmMessage::content)
+                        .findFirst()
+                        .orElseThrow();
+                assertThat(systemPrompt).contains("Validation missing before repository call");
+                assertThat(systemPrompt).contains("Controllers must validate request input before repository access.");
+                assertThat(systemPrompt).doesNotContain("Use Slf4j instead of direct System.out printing.");
+            }
             if (taskType == ReviewTask.TaskType.SECURITY) {
                 return new LlmResponse(
                         """

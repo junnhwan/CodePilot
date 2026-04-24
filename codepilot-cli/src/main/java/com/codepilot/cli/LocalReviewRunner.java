@@ -3,6 +3,7 @@ package com.codepilot.cli;
 import com.codepilot.core.application.context.DefaultContextCompiler;
 import com.codepilot.core.application.context.DiffAnalyzer;
 import com.codepilot.core.application.context.ImpactCalculator;
+import com.codepilot.core.application.memory.MemoryService;
 import com.codepilot.core.application.plan.PlanningAgent;
 import com.codepilot.core.application.review.MergeAgent;
 import com.codepilot.core.application.review.ReviewEngine;
@@ -71,7 +72,8 @@ public final class LocalReviewRunner {
                 new JavaParserAstParser(),
                 new ImpactCalculator(),
                 tokenCounter,
-                new ClasspathCompilationStrategyLoader(objectMapper).load("java-springboot-maven")
+                new ClasspathCompilationStrategyLoader(objectMapper).load("java-springboot-maven"),
+                new MemoryService(tokenCounter)
         );
         this.model = model;
         this.llmParams = llmParams == null ? Map.of() : Map.copyOf(llmParams);

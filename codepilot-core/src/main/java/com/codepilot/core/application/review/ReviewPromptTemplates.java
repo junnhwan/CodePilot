@@ -4,6 +4,7 @@ import com.codepilot.core.domain.agent.AgentDefinition;
 import com.codepilot.core.domain.context.ContextPack;
 import com.codepilot.core.domain.llm.LlmMessage;
 import com.codepilot.core.domain.llm.ToolDefinition;
+import com.codepilot.core.domain.memory.ReviewPattern;
 import com.codepilot.core.domain.memory.TeamConvention;
 import com.codepilot.core.domain.plan.ReviewTask;
 
@@ -21,11 +22,23 @@ public final class ReviewPromptTemplates {
             ContextPack contextPack,
             List<ToolDefinition> toolDefinitions
     ) {
-        String conventions = contextPack.projectMemory().teamConventions().isEmpty()
+        List<ReviewPattern> recalledPatterns = patternsForTask(reviewTask, contextPack);
+        String patterns = recalledPatterns.isEmpty()
                 ? "None"
-                : contextPack.projectMemory().teamConventions().stream()
-                .map(TeamConvention::rule)
-                .collect(Collectors.joining("\n- ", "- ", ""));
+                : recalledPatterns.stream()
+                .map(pattern -> "- [%s] %s | %s".formatted(
+                        pattern.patternType(),
+                        pattern.title(),
+                        pattern.description()
+                ))
+                .collect(Collectors.joining("\n"));
+
+        List<TeamConvention> recalledConventions = conventionsForTask(reviewTask, contextPack);
+        String conventions = recalledConventions.isEmpty()
+                ? "None"
+                : recalledConventions.stream()
+                .map(convention -> "- [%s] %s".formatted(convention.category(), convention.rule()))
+                .collect(Collectors.joining("\n"));
 
         String tools = toolDefinitions.stream()
                 .map(tool -> "- %s: %s | parameters=%s".formatted(tool.name(), tool.description(), tool.parameters()))
@@ -44,6 +57,9 @@ public final class ReviewPromptTemplates {
                 - focus areas: %s
 
                 Team conventions:
+                %s
+
+                Project memory patterns:
                 %s
 
                 Available tools:
@@ -69,6 +85,7 @@ public final class ReviewPromptTemplates {
                 reviewTask.focusHints(),
                 agentDefinition.focusAreas(),
                 conventions,
+                patterns,
                 tools
         );
 
@@ -118,5 +135,34 @@ public final class ReviewPromptTemplates {
         );
 
         return new LlmMessage("user", prompt);
+    }
+
+    private static List<ReviewPattern> patternsForTask(ReviewTask reviewTask, ContextPack contextPack) {
+        return contextPack.projectMemory().reviewPatterns().stream()
+                .filter(pattern -> switch (reviewTask.type()) {
+                    case SECURITY -> pattern.patternType() == ReviewPattern.PatternType.SECURITY_PATTERN
+                            || pattern.patternType() == ReviewPattern.PatternType.BUG_PATTERN;
+                    case PERF -> pattern.patternType() == ReviewPattern.PatternType.PERF_PATTERN
+                            || pattern.patternType() == ReviewPattern.PatternType.BUG_PATTERN;
+                    case STYLE -> pattern.patternType() == ReviewPattern.PatternType.CONVENTION;
+                    case MAINTAIN -> true;
+                })
+                .toList();
+    }
+
+    private static List<TeamConvention> conventionsForTask(ReviewTask reviewTask, ContextPack contextPack) {
+        return contextPack.projectMemory().teamConventions().stream()
+                .filter(convention -> switch (reviewTask.type()) {
+                    case SECURITY -> convention.category() == TeamConvention.Category.SECURITY
+                            || convention.category() == TeamConvention.Category.ARCHITECTURE;
+                    case PERF -> convention.category() == TeamConvention.Category.ARCHITECTURE
+                            || convention.category() == TeamConvention.Category.DEPENDENCY;
+                    case STYLE -> convention.category() == TeamConvention.Category.FORMAT
+                            || convention.category() == TeamConvention.Category.NAMING;
+                    case MAINTAIN -> convention.category() == TeamConvention.Category.ARCHITECTURE
+                            || convention.category() == TeamConvention.Category.DEPENDENCY
+                            || convention.category() == TeamConvention.Category.NAMING;
+                })
+                .toList();
     }
 }

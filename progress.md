@@ -265,18 +265,27 @@
 ### P9 Memory 系统
 
 - 目标
-  - 实现三层 Memory + Dream 沉淀。
+  - 在不提前实现 P10 / P11 / P12 的前提下，把 Project Memory 检索和最小可用的 Memory 注入接到现有 P8 主链。
+  - 本阶段只完成 review 过程对项目记忆的最小闭环，不提前落 Dream 沉淀、Global Knowledge 或 PgVector 完整能力。
 - 计划产出
-  - `MemoryService` — 三层 Memory 检索（Working / Project / Global）
-  - PgVector 向量检索接入
-  - 规则匹配引擎（Global Knowledge）
-  - `DreamProcessor` — 两阶段沉淀（Phase1 分析 + Phase2 增量更新）
+  - `MemoryService` — Project Memory 相关 recall（基于 diff / impact / token budget）
   - Memory 注入 Context 编译流程
-  - 种子数据（安全 pattern + 性能反模式 + 编码规范）
+  - Reviewer Prompt 消费 `ReviewPattern` / `TeamConvention`
+  - Gateway / CLI 复用新的最小 Memory 编译链路
 - 优先级
   - `P1`
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 新增 `application/memory/MemoryService`，在不引入 PgVector 和 Dream 的前提下，基于 `DiffSummary + ImpactSet + rawDiff + token budget` 从现有 `ProjectMemory` 聚合中召回相关 `ReviewPattern / TeamConvention`
+  - `DefaultContextCompiler` 接入 `MemoryService`，把 Project Memory recall 正式纳入 Context 编译链路；当前只注入相关记忆而不是整包聚合，并把记忆内容纳入 `TokenBudget` 使用量估算
+  - `ReviewPromptTemplates` 升级为显式向 reviewer 注入 `Project memory patterns` 和按任务类型筛选后的团队规范，保持 `FINDING_REPORTED != ISSUE_CONFIRMED` 语义不变
+  - `codepilot-gateway` 与 `codepilot-cli` 已切换到新的 Memory-aware `DefaultContextCompiler` 构造方式，P8 的 Planning → Multi-Agent Review → Merge 主链保持不变
+  - 新增 P9 定向测试：`MemoryServiceTest`、`DefaultContextCompilerTest` 扩展、`GitHubReviewWorkerTest` 扩展；覆盖相关记忆召回、ContextPack 注入和 Gateway 主链下 reviewer prompt 实际消费项目记忆
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=MemoryServiceTest,DefaultContextCompilerTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P9 定向测试全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 47 个测试全部通过
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示工作区 LF/CRLF 转换警告，无格式错误）
 
 ### P10 Eval Center
 

@@ -3,6 +3,7 @@ package com.codepilot.gateway.config;
 import com.codepilot.core.application.context.DefaultContextCompiler;
 import com.codepilot.core.application.context.DiffAnalyzer;
 import com.codepilot.core.application.context.ImpactCalculator;
+import com.codepilot.core.application.memory.MemoryService;
 import com.codepilot.core.application.review.TokenCounter;
 import com.codepilot.core.domain.context.ContextCompiler;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
@@ -52,7 +53,8 @@ public class GatewayReviewConfiguration {
                 new JavaParserAstParser(),
                 new ImpactCalculator(),
                 tokenCounter,
-                new ClasspathCompilationStrategyLoader(objectMapper).load("java-springboot-maven")
+                new ClasspathCompilationStrategyLoader(objectMapper).load("java-springboot-maven"),
+                new MemoryService(tokenCounter)
         );
     }
 

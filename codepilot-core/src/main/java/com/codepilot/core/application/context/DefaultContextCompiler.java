@@ -1,5 +1,6 @@
 package com.codepilot.core.application.context;
 
+import com.codepilot.core.application.memory.MemoryService;
 import com.codepilot.core.application.review.TokenCounter;
 import com.codepilot.core.domain.context.AstParser;
 import com.codepilot.core.domain.context.CompilationStrategy;
@@ -29,18 +30,22 @@ public final class DefaultContextCompiler implements ContextCompiler {
 
     private final CompilationStrategy compilationStrategy;
 
+    private final MemoryService memoryService;
+
     public DefaultContextCompiler(
             DiffAnalyzer diffAnalyzer,
             AstParser astParser,
             ImpactCalculator impactCalculator,
             TokenCounter tokenCounter,
-            CompilationStrategy compilationStrategy
+            CompilationStrategy compilationStrategy,
+            MemoryService memoryService
     ) {
         this.diffAnalyzer = diffAnalyzer;
         this.astParser = astParser;
         this.impactCalculator = impactCalculator;
         this.tokenCounter = tokenCounter;
         this.compilationStrategy = compilationStrategy;
+        this.memoryService = memoryService;
     }
 
     @Override
@@ -72,6 +77,13 @@ public final class DefaultContextCompiler implements ContextCompiler {
                 astParser,
                 compilationStrategy
         );
+        ProjectMemory recalledMemory = memoryService.recall(
+                projectMemory,
+                impactAnalysis.diffSummary(),
+                impactAnalysis.impactSet(),
+                rawDiff,
+                compilationStrategy.tokenBudget().memories()
+        );
 
         List<SnippetCandidate> candidates = new ArrayList<>();
         addChangedFileSnippets(normalizedRepoRoot, diffAnalysis, candidates);
@@ -91,6 +103,7 @@ public final class DefaultContextCompiler implements ContextCompiler {
         for (ContextPack.CodeSnippet snippet : snippets) {
             usedTokens += tokenCounter.countText(snippet.content());
         }
+        usedTokens += tokenCounter.countText(memorySummary(recalledMemory));
         usedTokens = Math.min(usedTokens, compilationStrategy.tokenBudget().total());
 
         return new ContextPack(
@@ -98,7 +111,7 @@ public final class DefaultContextCompiler implements ContextCompiler {
                 impactAnalysis.diffSummary(),
                 impactAnalysis.impactSet(),
                 snippets,
-                projectMemory,
+                recalledMemory,
                 new ContextPack.TokenBudget(
                         compilationStrategy.tokenBudget().total(),
                         compilationStrategy.tokenBudget().reserve(),
@@ -242,6 +255,21 @@ public final class DefaultContextCompiler implements ContextCompiler {
 
     private boolean isJavaSource(String filePath) {
         return filePath != null && filePath.endsWith(".java");
+    }
+
+    private String memorySummary(ProjectMemory projectMemory) {
+        StringBuilder builder = new StringBuilder();
+        projectMemory.reviewPatterns().forEach(pattern -> builder.append(pattern.title())
+                .append(System.lineSeparator())
+                .append(pattern.description())
+                .append(System.lineSeparator()));
+        projectMemory.teamConventions().forEach(convention -> builder.append(convention.rule())
+                .append(System.lineSeparator())
+                .append(convention.exampleGood())
+                .append(System.lineSeparator())
+                .append(convention.exampleBad())
+                .append(System.lineSeparator()));
+        return builder.toString();
     }
 
     private record SnippetCandidate(

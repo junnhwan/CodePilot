@@ -1,9 +1,12 @@
 package com.codepilot.core.application.context;
 
+import com.codepilot.core.application.memory.MemoryService;
 import com.codepilot.core.application.review.TokenCounter;
 import com.codepilot.core.domain.context.ContextCompiler;
 import com.codepilot.core.domain.context.ContextPack;
 import com.codepilot.core.domain.memory.ProjectMemory;
+import com.codepilot.core.domain.memory.ReviewPattern;
+import com.codepilot.core.domain.memory.TeamConvention;
 import com.codepilot.core.infrastructure.context.ClasspathCompilationStrategyLoader;
 import com.codepilot.core.infrastructure.context.JavaParserAstParser;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -13,6 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,13 +79,46 @@ class DefaultContextCompilerTest {
                 new ImpactCalculator(),
                 new TokenCounter(),
                 new ClasspathCompilationStrategyLoader(JsonMapper.builder().findAndAddModules().build())
-                        .load("java-springboot-maven")
+                        .load("java-springboot-maven"),
+                new MemoryService(new TokenCounter())
         );
+
+        ProjectMemory projectMemory = ProjectMemory.empty("project-alpha")
+                .addPattern(new ReviewPattern(
+                        "pattern-1",
+                        "project-alpha",
+                        ReviewPattern.PatternType.SECURITY_PATTERN,
+                        "Validation missing before repository call",
+                        "Controllers in this project often skip validation before DAO access.",
+                        "repository.findById(request.userId())",
+                        3,
+                        Instant.parse("2026-04-24T00:00:00Z")
+                ))
+                .addConvention(new TeamConvention(
+                        "conv-1",
+                        "project-alpha",
+                        TeamConvention.Category.ARCHITECTURE,
+                        "Service layer should delegate data access into repository methods.",
+                        "UserService calls UserRepository.findByName(name).",
+                        "Controllers or callers build queries directly.",
+                        0.95d,
+                        TeamConvention.Source.MANUAL
+                ))
+                .addConvention(new TeamConvention(
+                        "conv-2",
+                        "project-alpha",
+                        TeamConvention.Category.FORMAT,
+                        "Use Slf4j instead of direct System.out printing.",
+                        "log.info(\"created\")",
+                        "System.out.println(created)",
+                        0.80d,
+                        TeamConvention.Source.MANUAL
+                ));
 
         ContextPack contextPack = contextCompiler.compile(
                 repoRoot,
                 rawDiff,
-                ProjectMemory.empty("project-alpha"),
+                projectMemory,
                 Map.of("entrypoint", "test")
         );
 
@@ -103,6 +140,13 @@ class DefaultContextCompilerTest {
                     assertThat(snippet.reason()).contains("Direct dependency symbols");
                     assertThat(snippet.content()).contains("UserRepository#findByName");
                 });
+        assertThat(contextPack.projectMemory().reviewPatterns())
+                .extracting(ReviewPattern::patternId)
+                .containsExactly("pattern-1");
+        assertThat(contextPack.projectMemory().teamConventions())
+                .extracting(TeamConvention::conventionId)
+                .contains("conv-1")
+                .doesNotContain("conv-2");
         assertThat(contextPack.tokenBudget().totalTokens()).isEqualTo(8000);
         assertThat(contextPack.tokenBudget().reservedTokens()).isEqualTo(500);
     }
