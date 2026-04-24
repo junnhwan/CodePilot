@@ -58,6 +58,8 @@ public final class EvalRunner {
 
     private final EvalBaselineReviewer baselineReviewer;
 
+    private final LintOnlyBaselineReviewer lintOnlyBaselineReviewer;
+
     public EvalRunner(LlmClient llmClient) {
         this(llmClient, "codepilot-eval-review", Map.of());
     }
@@ -71,6 +73,7 @@ public final class EvalRunner {
         this.model = model;
         this.llmParams = llmParams == null ? Map.of() : Map.copyOf(llmParams);
         this.baselineReviewer = new EvalBaselineReviewer(llmClient, toolCallParser, tokenCounter, model, this.llmParams);
+        this.lintOnlyBaselineReviewer = new LintOnlyBaselineReviewer();
     }
 
     public RunResult run(List<EvalScenario> scenarios) {
@@ -111,6 +114,19 @@ public final class EvalRunner {
                         runResult.reviewResult(),
                         durationMillis(startedAt),
                         runCapture.contextTokensUsed(),
+                        fullContextTokens,
+                        null
+                );
+            }
+
+            if (baseline == EvalBaseline.LINT_ONLY) {
+                ReviewResult reviewResult = lintOnlyBaselineReviewer.review(sessionId, scenario);
+                return new ScenarioResult(
+                        scenario,
+                        null,
+                        reviewResult,
+                        durationMillis(startedAt),
+                        tokenCounter.countText(scenario.rawDiff()),
                         fullContextTokens,
                         null
                 );

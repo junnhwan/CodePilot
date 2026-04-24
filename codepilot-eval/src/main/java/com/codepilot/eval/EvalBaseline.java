@@ -5,7 +5,8 @@ import java.util.Locale;
 public enum EvalBaseline {
     CODEPILOT,
     DIRECT_LLM,
-    FULL_CONTEXT_LLM;
+    FULL_CONTEXT_LLM,
+    LINT_ONLY;
 
     public String cliName() {
         return name().toLowerCase(Locale.ROOT);

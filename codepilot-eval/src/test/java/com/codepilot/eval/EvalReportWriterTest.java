@@ -24,7 +24,12 @@ class EvalReportWriterTest {
         EvalSuiteResult suiteResult = suiteRunner.run(
                 EvalScenarioLoader.DEFAULT_SCENARIO_PACK,
                 loader.loadDefaultScenarios(),
-                List.of(EvalBaseline.CODEPILOT, EvalBaseline.DIRECT_LLM, EvalBaseline.FULL_CONTEXT_LLM)
+                List.of(
+                        EvalBaseline.CODEPILOT,
+                        EvalBaseline.DIRECT_LLM,
+                        EvalBaseline.FULL_CONTEXT_LLM,
+                        EvalBaseline.LINT_ONLY
+                )
         );
 
         EvalReportWriter.ReportFiles reportFiles = new EvalReportWriter().write(tempDir, suiteResult);
@@ -35,7 +40,7 @@ class EvalReportWriterTest {
         ObjectMapper objectMapper = JsonMapper.builder().findAndAddModules().build();
         var jsonReport = objectMapper.readTree(reportFiles.jsonReport().toFile());
         assertThat(jsonReport.path("evalRunId").asText()).isEqualTo(suiteResult.evalRunId());
-        assertThat(jsonReport.path("runs")).hasSize(3);
+        assertThat(jsonReport.path("runs")).hasSize(4);
         assertThat(jsonReport.path("baselineComparisons").isArray()).isTrue();
         assertThat(jsonReport.path("scenarioSummaries").isArray()).isTrue();
 
@@ -43,6 +48,8 @@ class EvalReportWriterTest {
         assertThat(markdown).contains("CodePilot Eval Report");
         assertThat(markdown).contains("CODEPILOT");
         assertThat(markdown).contains("DIRECT_LLM");
+        assertThat(markdown).contains("LINT_ONLY");
         assertThat(markdown).contains("eval-safe-refactor-001");
+        assertThat(markdown).contains("Catch block swallows exception");
     }
 }

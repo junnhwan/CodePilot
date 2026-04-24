@@ -53,6 +53,7 @@ public final class EvalSuiteRunner {
             ordered.add(EvalBaseline.CODEPILOT);
             ordered.add(EvalBaseline.DIRECT_LLM);
             ordered.add(EvalBaseline.FULL_CONTEXT_LLM);
+            ordered.add(EvalBaseline.LINT_ONLY);
         } else {
             ordered.addAll(baselines);
         }

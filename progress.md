@@ -440,6 +440,30 @@
   - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 75 个测试全部通过，`core / gateway / eval / mcp-server / cli` 无回退
   - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
 
+### P16 扩容评测场景并补齐 Lint Only baseline
+
+- 目标
+  - 在不重写现有 Eval Center 主链的前提下，把评测场景从 P13 的最小 pack 扩到更有代表性的阶段性规模，并补齐低成本 `Lint Only` baseline。
+  - 保持现有 `EvalScenario -> EvalRunner -> EvalSuiteRunner -> Scorecard / Report / CLI` 链路，只做增量扩展。
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `codepilot-eval` 新增 `LintOnlyBaselineReviewer`，以纯规则 / 模式匹配方式提供最小 `LINT_ONLY` baseline；当前覆盖高信号规则：SQL 拼接、循环内 repository 调用、硬编码 token、异常吞没，不接 LLM、不引入额外静态分析平台
+  - `EvalBaseline`、`EvalRunner`、`EvalSuiteRunner`、`CodePilotEvalCli` 已扩展为四路 baseline：`CODEPILOT / DIRECT_LLM / FULL_CONTEXT_LLM / LINT_ONLY`；其中 `LINT_ONLY` 仍走独立 reviewer，不影响现有 CodePilot 主链
+  - `EvalScenarioLoader` 已支持 scenario pack `includes` 聚合加载和重复 `scenarioId` fail-fast 校验；默认 pack 从 `minimal-scenario-pack` 切换到 `expanded-scenario-pack`
+  - 新增资源化场景包：`security-scenario-pack.json`、`perf-scenario-pack.json`、`expanded-scenario-pack.json`；当前默认 pack 扩至 7 个场景，覆盖安全、性能、无问题变更、跨文件影响与可维护性异常吞没
+  - `EvalReportWriter` 的 Markdown scenario matrix 已增加 `Name` 列，便于更大场景集下阅读报告
+  - 新增 / 扩展测试：`LintOnlyBaselineReviewerTest` 覆盖规则型 baseline，`EvalScenarioLoaderTest` 覆盖 pack include 加载，`EvalSuiteRunnerTest` / `EvalReportWriterTest` / `CodePilotEvalCliTest` 覆盖 4 路 baseline 消费；同时更新 eval fixture LLM，使扩容后的默认 pack 在离线测试下仍能稳定表达预期基线差异
+- 验收结果
+  - `2026-04-24` 先执行 `.\mvnw.cmd -pl codepilot-eval -am "-Dtest=LintOnlyBaselineReviewerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，确认失败原因来自 `LintOnlyBaselineReviewer` 缺失，符合 TDD 预期
+  - `2026-04-24` 实现后执行 `.\mvnw.cmd -pl codepilot-eval -am "-Dtest=LintOnlyBaselineReviewerTest,EvalScenarioLoaderTest,EvalSuiteRunnerTest,EvalReportWriterTest,CodePilotEvalCliTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，Task 3 定向测试全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 78 个测试全部通过，`core / gateway / eval / mcp-server / cli` 无回退
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-eval -am package -DskipTests`，成功生成可执行 `codepilot-eval-0.1.0-SNAPSHOT.jar`
+  - `2026-04-24` 执行 `git diff --check -- codepilot-eval progress.md`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
+  - `2026-04-24` 未执行真实 `java -jar codepilot-eval\\target\\codepilot-eval-0.1.0-SNAPSHOT.jar run ...`：当前环境缺少 `CODEPILOT_LLM_BASE_URL` / `CODEPILOT_LLM_API_KEY`，因此保留为离线 CLI 测试 + jar 打包验证，不伪造成功结果
+
 ---
 
 ## 延期清单

@@ -30,12 +30,15 @@ class CodePilotEvalCliTest {
 
         int exitCode = cli.run(new String[]{
                 "run",
+                "--scenario-pack", "eval/scenarios/expanded-scenario-pack.json",
+                "--baselines", "codepilot,direct_llm,full_context_llm,lint_only",
                 "--report-dir", tempDir.toString()
         });
 
         assertThat(exitCode).isZero();
         assertThat(stderr.toString(StandardCharsets.UTF_8)).isBlank();
         assertThat(stdout.toString(StandardCharsets.UTF_8)).contains("CODEPILOT");
+        assertThat(stdout.toString(StandardCharsets.UTF_8)).contains("LINT_ONLY");
         assertThat(stdout.toString(StandardCharsets.UTF_8)).contains("report.md");
 
         try (var children = Files.list(tempDir)) {

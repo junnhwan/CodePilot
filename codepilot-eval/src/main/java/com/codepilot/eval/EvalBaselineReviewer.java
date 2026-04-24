@@ -46,7 +46,8 @@ final class EvalBaselineReviewer {
         return switch (baseline) {
             case DIRECT_LLM -> invoke(sessionId, directSystemPrompt(), directUserPrompt(scenario));
             case FULL_CONTEXT_LLM -> invoke(sessionId, fullContextSystemPrompt(), fullContextUserPrompt(scenario));
-            case CODEPILOT -> throw new IllegalArgumentException("CODEPILOT baseline must use EvalRunner orchestrator path");
+            case CODEPILOT, LINT_ONLY ->
+                    throw new IllegalArgumentException(baseline + " baseline must use its dedicated EvalRunner path");
         };
     }
 

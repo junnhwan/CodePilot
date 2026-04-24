@@ -155,7 +155,8 @@ public final class CodePilotEvalCli {
             List<EvalBaseline> baselines = List.of(
                     EvalBaseline.CODEPILOT,
                     EvalBaseline.DIRECT_LLM,
-                    EvalBaseline.FULL_CONTEXT_LLM
+                    EvalBaseline.FULL_CONTEXT_LLM,
+                    EvalBaseline.LINT_ONLY
             );
 
             for (int index = 1; index < args.length; index++) {

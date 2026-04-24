@@ -27,10 +27,10 @@ class EvalRunnerTest {
         EvalRunner.RunResult runResult = runner.run(loader.loadDefaultScenarios());
 
         assertThat(runResult.baseline()).isEqualTo(EvalBaseline.CODEPILOT);
-        assertThat(runResult.scenarioResults()).hasSize(4);
+        assertThat(runResult.scenarioResults()).hasSize(7);
         assertThat(runResult.scenarioResults()).allMatch(EvalRunner.ScenarioResult::successful);
         assertThat(runResult.scenarioResults()).allMatch(EvalRunner.ScenarioResult::passed);
-        assertThat(runResult.scorecard().scenariosPassed()).isEqualTo(4);
+        assertThat(runResult.scorecard().scenariosPassed()).isEqualTo(7);
         assertThat(runResult.scorecard().scenariosFailed()).isZero();
         assertThat(runResult.scorecard().scenariosError()).isZero();
         assertThat(runResult.scorecard().metrics().precision()).isEqualTo(1.0d);
@@ -40,6 +40,7 @@ class EvalRunnerTest {
         assertThat(runResult.scorecard().metrics().avgTokenEfficiency()).isPositive();
         assertThat(runResult.scorecard().byCategory().get("SECURITY").recall()).isEqualTo(1.0d);
         assertThat(runResult.scorecard().byCategory().get("PERF").precision()).isEqualTo(1.0d);
+        assertThat(runResult.scorecard().byCategory().get("MAINTAIN").precision()).isEqualTo(1.0d);
     }
 
     @Test
@@ -119,6 +120,27 @@ class EvalRunnerTest {
                         }
                         """);
             }
+            if (taskType == ReviewTask.TaskType.SECURITY
+                    && userPrompt.contains("ghp_demo_insecure_token")) {
+                return deliver("""
+                        {
+                          "decision": "DELIVER",
+                          "findings": [
+                            {
+                              "file": "src/main/java/com/example/github/GitHubWebhookClient.java",
+                              "line": 4,
+                              "severity": "HIGH",
+                              "confidence": 0.94,
+                              "category": "security",
+                              "title": "Hardcoded API token",
+                              "description": "A fallback GitHub token is hardcoded in source code.",
+                              "suggestion": "Load the token from a secret store or environment variable.",
+                              "evidence": ["The diff assigns FALLBACK_GITHUB_TOKEN to a literal value."]
+                            }
+                          ]
+                        }
+                        """);
+            }
             if (taskType == ReviewTask.TaskType.PERF
                     && userPrompt.contains("orderRepository.findById(orderId)")) {
                 return deliver("""
@@ -135,6 +157,27 @@ class EvalRunnerTest {
                               "description": "The diff introduces one repository lookup per order id.",
                               "suggestion": "Batch load the orders outside the loop.",
                               "evidence": ["The changed loop performs orderRepository.findById(orderId) on each iteration."]
+                            }
+                          ]
+                        }
+                        """);
+            }
+            if (taskType == ReviewTask.TaskType.PERF
+                    && userPrompt.contains("invoiceRepository.findById(invoiceId)")) {
+                return deliver("""
+                        {
+                          "decision": "DELIVER",
+                          "findings": [
+                            {
+                              "file": "src/main/java/com/example/invoice/InvoiceAggregationService.java",
+                              "line": 10,
+                              "severity": "MEDIUM",
+                              "confidence": 0.92,
+                              "category": "perf",
+                              "title": "Repository call inside loop",
+                              "description": "The diff introduces one repository lookup per invoice id.",
+                              "suggestion": "Batch load the invoices outside the loop.",
+                              "evidence": ["The changed loop performs invoiceRepository.findById(invoiceId) on each iteration."]
                             }
                           ]
                         }
@@ -157,6 +200,27 @@ class EvalRunnerTest {
                               "description": "The project token reaches tokenRepository without the known TokenGuard check.",
                               "suggestion": "Call tokenGuard.requireProjectAccess(projectToken) before the repository lookup.",
                               "evidence": ["The diff reads from tokenRepository directly and the recalled memory pattern requires TokenGuard first."]
+                            }
+                          ]
+                        }
+                        """);
+            }
+            if (taskType == ReviewTask.TaskType.MAINTAIN
+                    && userPrompt.contains("catch (IOException error)")) {
+                return deliver("""
+                        {
+                          "decision": "DELIVER",
+                          "findings": [
+                            {
+                              "file": "src/main/java/com/example/audit/WebhookAuditWriter.java",
+                              "line": 9,
+                              "severity": "MEDIUM",
+                              "confidence": 0.89,
+                              "category": "maintain",
+                              "title": "Exception swallowed",
+                              "description": "The catch block ignores IOException instead of surfacing or logging it.",
+                              "suggestion": "Log the exception or rethrow it as an explicit failure.",
+                              "evidence": ["The added catch block contains only an ignore comment."]
                             }
                           ]
                         }

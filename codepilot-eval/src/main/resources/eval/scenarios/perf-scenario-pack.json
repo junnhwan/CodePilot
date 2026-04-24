@@ -1,0 +1,128 @@
+{
+  "scenarios": [
+    {
+      "scenarioId": "eval-repository-loop-001",
+      "name": "Repository lookup inside loop",
+      "description": "Detect repeated repository calls introduced inside a loop.",
+      "projectId": "eval-perf-project",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/order/OrderService.java",
+          "lines": [
+            "package com.example.order;",
+            "",
+            "import java.util.ArrayList;",
+            "import java.util.List;",
+            "",
+            "class OrderService {",
+            "    List<Order> loadOrders(List<String> orderIds) {",
+            "        List<Order> orders = new ArrayList<>();",
+            "        for (String orderId : orderIds) {",
+            "            orders.add(orderRepository.findById(orderId));",
+            "        }",
+            "        return orders;",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/order/OrderService.java b/src/main/java/com/example/order/OrderService.java",
+        "index 3333333..4444444 100644",
+        "--- a/src/main/java/com/example/order/OrderService.java",
+        "+++ b/src/main/java/com/example/order/OrderService.java",
+        "@@ -1,3 +1,14 @@",
+        " package com.example.order;",
+        "+",
+        "+import java.util.ArrayList;",
+        "+import java.util.List;",
+        "+",
+        "+class OrderService {",
+        "+    List<Order> loadOrders(List<String> orderIds) {",
+        "+        List<Order> orders = new ArrayList<>();",
+        "+        for (String orderId : orderIds) {",
+        "+            orders.add(orderRepository.findById(orderId));",
+        "+        }",
+        "+        return orders;",
+        "+    }",
+        "+}"
+      ],
+      "groundTruth": [
+        {
+          "filePath": "src/main/java/com/example/order/OrderService.java",
+          "startLine": 10,
+          "endLine": 10,
+          "severity": "MEDIUM",
+          "category": "perf",
+          "title": "Repository call inside loop"
+        }
+      ],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    },
+    {
+      "scenarioId": "eval-repository-loop-002",
+      "name": "Invoice lookup inside loop",
+      "description": "Detect another loop that performs one repository call per identifier.",
+      "projectId": "eval-second-perf-project",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/invoice/InvoiceAggregationService.java",
+          "lines": [
+            "package com.example.invoice;",
+            "",
+            "import java.util.ArrayList;",
+            "import java.util.List;",
+            "",
+            "class InvoiceAggregationService {",
+            "    List<Invoice> loadInvoices(List<String> invoiceIds) {",
+            "        List<Invoice> invoices = new ArrayList<>();",
+            "        for (String invoiceId : invoiceIds) {",
+            "            invoices.add(invoiceRepository.findById(invoiceId));",
+            "        }",
+            "        return invoices;",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/invoice/InvoiceAggregationService.java b/src/main/java/com/example/invoice/InvoiceAggregationService.java",
+        "index 8888888..9999999 100644",
+        "--- a/src/main/java/com/example/invoice/InvoiceAggregationService.java",
+        "+++ b/src/main/java/com/example/invoice/InvoiceAggregationService.java",
+        "@@ -1,3 +1,14 @@",
+        " package com.example.invoice;",
+        "+",
+        "+import java.util.ArrayList;",
+        "+import java.util.List;",
+        "+",
+        "+class InvoiceAggregationService {",
+        "+    List<Invoice> loadInvoices(List<String> invoiceIds) {",
+        "+        List<Invoice> invoices = new ArrayList<>();",
+        "+        for (String invoiceId : invoiceIds) {",
+        "+            invoices.add(invoiceRepository.findById(invoiceId));",
+        "+        }",
+        "+        return invoices;",
+        "+    }",
+        "+}"
+      ],
+      "groundTruth": [
+        {
+          "filePath": "src/main/java/com/example/invoice/InvoiceAggregationService.java",
+          "startLine": 10,
+          "endLine": 10,
+          "severity": "MEDIUM",
+          "category": "perf",
+          "title": "Repository call inside loop"
+        }
+      ],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    }
+  ]
+}

@@ -1,0 +1,196 @@
+{
+  "scenarios": [
+    {
+      "scenarioId": "eval-sql-injection-001",
+      "name": "SQL injection in repository query",
+      "description": "Detect string-built SQL introduced in a repository method.",
+      "projectId": "eval-sql-project",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/user/UserRepository.java",
+          "lines": [
+            "package com.example.user;",
+            "",
+            "class UserRepository {",
+            "    String findByName(String name) {",
+            "        return jdbcTemplate.queryForObject(",
+            "                \"select * from users where name = '\" + name + \"'\",",
+            "                String.class);",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/user/UserRepository.java b/src/main/java/com/example/user/UserRepository.java",
+        "index 1111111..2222222 100644",
+        "--- a/src/main/java/com/example/user/UserRepository.java",
+        "+++ b/src/main/java/com/example/user/UserRepository.java",
+        "@@ -1,3 +1,9 @@",
+        " package com.example.user;",
+        " ",
+        " class UserRepository {",
+        "+    String findByName(String name) {",
+        "+        return jdbcTemplate.queryForObject(",
+        "+                \"select * from users where name = '\" + name + \"'\",",
+        "+                String.class);",
+        "+    }",
+        " }"
+      ],
+      "groundTruth": [
+        {
+          "filePath": "src/main/java/com/example/user/UserRepository.java",
+          "startLine": 6,
+          "endLine": 6,
+          "severity": "HIGH",
+          "category": "security",
+          "title": "SQL injection risk"
+        }
+      ],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    },
+    {
+      "scenarioId": "eval-hardcoded-token-001",
+      "name": "Hardcoded fallback token",
+      "description": "Detect a hardcoded GitHub token introduced in source code.",
+      "projectId": "eval-hardcoded-token-project",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/github/GitHubWebhookClient.java",
+          "lines": [
+            "package com.example.github;",
+            "",
+            "class GitHubWebhookClient {",
+            "    private static final String FALLBACK_GITHUB_TOKEN = \"ghp_demo_insecure_token\";",
+            "",
+            "    String authHeader() {",
+            "        return \"Bearer \" + FALLBACK_GITHUB_TOKEN;",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/github/GitHubWebhookClient.java b/src/main/java/com/example/github/GitHubWebhookClient.java",
+        "index 2222222..3333333 100644",
+        "--- a/src/main/java/com/example/github/GitHubWebhookClient.java",
+        "+++ b/src/main/java/com/example/github/GitHubWebhookClient.java",
+        "@@ -1,3 +1,9 @@",
+        " package com.example.github;",
+        " ",
+        "+class GitHubWebhookClient {",
+        "+    private static final String FALLBACK_GITHUB_TOKEN = \"ghp_demo_insecure_token\";",
+        "+",
+        "+    String authHeader() {",
+        "+        return \"Bearer \" + FALLBACK_GITHUB_TOKEN;",
+        "+    }",
+        "+}"
+      ],
+      "groundTruth": [
+        {
+          "filePath": "src/main/java/com/example/github/GitHubWebhookClient.java",
+          "startLine": 4,
+          "endLine": 4,
+          "severity": "HIGH",
+          "category": "security",
+          "title": "Hardcoded API token"
+        }
+      ],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    },
+    {
+      "scenarioId": "eval-cross-file-token-guard-001",
+      "name": "Cross-file token flow misses repository guard",
+      "description": "A controller-to-service change still reaches tokenRepository before the known TokenGuard step.",
+      "projectId": "eval-cross-file-guard",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/token/TokenController.java",
+          "lines": [
+            "package com.example.token;",
+            "",
+            "class TokenController {",
+            "    AccessToken show(String projectToken) {",
+            "        return projectTokenService.loadToken(projectToken);",
+            "    }",
+            "}"
+          ]
+        },
+        {
+          "path": "src/main/java/com/example/token/ProjectTokenService.java",
+          "lines": [
+            "package com.example.token;",
+            "",
+            "class ProjectTokenService {",
+            "    AccessToken loadToken(String projectToken) {",
+            "        return tokenRepository.findByProjectToken(projectToken);",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/token/TokenController.java b/src/main/java/com/example/token/TokenController.java",
+        "index 4444444..5555555 100644",
+        "--- a/src/main/java/com/example/token/TokenController.java",
+        "+++ b/src/main/java/com/example/token/TokenController.java",
+        "@@ -1,3 +1,7 @@",
+        " package com.example.token;",
+        " ",
+        "+class TokenController {",
+        "+    AccessToken show(String projectToken) {",
+        "+        return projectTokenService.loadToken(projectToken);",
+        "+    }",
+        "+}",
+        "diff --git a/src/main/java/com/example/token/ProjectTokenService.java b/src/main/java/com/example/token/ProjectTokenService.java",
+        "index 6666666..7777777 100644",
+        "--- a/src/main/java/com/example/token/ProjectTokenService.java",
+        "+++ b/src/main/java/com/example/token/ProjectTokenService.java",
+        "@@ -1,3 +1,7 @@",
+        " package com.example.token;",
+        " ",
+        "+class ProjectTokenService {",
+        "+    AccessToken loadToken(String projectToken) {",
+        "+        return tokenRepository.findByProjectToken(projectToken);",
+        "+    }",
+        "+}"
+      ],
+      "projectMemory": {
+        "projectId": "eval-cross-file-guard",
+        "reviewPatterns": [
+          {
+            "patternId": "pattern-token-guard-cross-file",
+            "projectId": "eval-cross-file-guard",
+            "patternType": "SECURITY_PATTERN",
+            "title": "Project token lookups must call TokenGuard before repository access",
+            "description": "When a project token flows into ProjectTokenService, require TokenGuard validation before reading from tokenRepository.",
+            "codeExample": "tokenGuard.requireProjectAccess(projectToken);",
+            "frequency": 4,
+            "lastSeenAt": "2026-04-24T00:00:00Z"
+          }
+        ],
+        "teamConventions": []
+      },
+      "groundTruth": [
+        {
+          "filePath": "src/main/java/com/example/token/ProjectTokenService.java",
+          "startLine": 5,
+          "endLine": 5,
+          "severity": "HIGH",
+          "category": "security",
+          "title": "Missing token guard before repository access"
+        }
+      ],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    }
+  ]
+}

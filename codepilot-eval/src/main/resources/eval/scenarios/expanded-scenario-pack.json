@@ -1,0 +1,111 @@
+{
+  "includes": [
+    "security-scenario-pack.json",
+    "perf-scenario-pack.json"
+  ],
+  "scenarios": [
+    {
+      "scenarioId": "eval-safe-refactor-001",
+      "name": "Harmless formatter refactor",
+      "description": "Verify the eval runner can represent a no-finding scenario without false positives.",
+      "projectId": "eval-safe-project",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/profile/ProfileFormatter.java",
+          "lines": [
+            "package com.example.profile;",
+            "",
+            "class ProfileFormatter {",
+            "    String format(String userName) {",
+            "        String normalizedUserName = userName == null ? \"\" : userName.trim();",
+            "        return normalizedUserName.toUpperCase();",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/profile/ProfileFormatter.java b/src/main/java/com/example/profile/ProfileFormatter.java",
+        "index 7777777..8888888 100644",
+        "--- a/src/main/java/com/example/profile/ProfileFormatter.java",
+        "+++ b/src/main/java/com/example/profile/ProfileFormatter.java",
+        "@@ -2,5 +2,5 @@",
+        " ",
+        " class ProfileFormatter {",
+        "-    String format(String name) {",
+        "-        String normalized = name == null ? \"\" : name.trim();",
+        "-        return normalized.toUpperCase();",
+        "+    String format(String userName) {",
+        "+        String normalizedUserName = userName == null ? \"\" : userName.trim();",
+        "+        return normalizedUserName.toUpperCase();",
+        "     }",
+        " }"
+      ],
+      "groundTruth": [],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    },
+    {
+      "scenarioId": "eval-swallowed-exception-001",
+      "name": "Catch block swallows exception",
+      "description": "Detect a newly introduced catch block that only ignores the exception.",
+      "projectId": "eval-swallowed-exception-project",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/audit/WebhookAuditWriter.java",
+          "lines": [
+            "package com.example.audit;",
+            "",
+            "import java.io.IOException;",
+            "",
+            "class WebhookAuditWriter {",
+            "    void record(String payload) {",
+            "        try {",
+            "            auditStore.write(payload);",
+            "        } catch (IOException error) {",
+            "            // ignored during retry handoff",
+            "        }",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/audit/WebhookAuditWriter.java b/src/main/java/com/example/audit/WebhookAuditWriter.java",
+        "index aaaaaaa..bbbbbbb 100644",
+        "--- a/src/main/java/com/example/audit/WebhookAuditWriter.java",
+        "+++ b/src/main/java/com/example/audit/WebhookAuditWriter.java",
+        "@@ -1,3 +1,13 @@",
+        " package com.example.audit;",
+        "+",
+        "+import java.io.IOException;",
+        "+",
+        "+class WebhookAuditWriter {",
+        "+    void record(String payload) {",
+        "+        try {",
+        "+            auditStore.write(payload);",
+        "+        } catch (IOException error) {",
+        "+            // ignored during retry handoff",
+        "+        }",
+        "+    }",
+        "+}"
+      ],
+      "groundTruth": [
+        {
+          "filePath": "src/main/java/com/example/audit/WebhookAuditWriter.java",
+          "startLine": 9,
+          "endLine": 9,
+          "severity": "MEDIUM",
+          "category": "maintain",
+          "title": "Exception swallowed"
+        }
+      ],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    }
+  ]
+}

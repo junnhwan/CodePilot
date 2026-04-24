@@ -106,12 +106,12 @@ public final class EvalReportWriter {
         }
 
         builder.append("## Scenario Matrix").append(System.lineSeparator()).append(System.lineSeparator());
-        builder.append("| Scenario | Ground Truth | ");
+        builder.append("| Scenario | Name | Ground Truth | ");
         for (EvalRunner.RunResult run : suiteResult.runs()) {
             builder.append(run.baseline()).append(" | ");
         }
         builder.append(System.lineSeparator());
-        builder.append("| --- | ---: | ");
+        builder.append("| --- | --- | ---: | ");
         for (int index = 0; index < suiteResult.runs().size(); index++) {
             builder.append("--- | ");
         }
@@ -119,6 +119,8 @@ public final class EvalReportWriter {
         for (EvalSuiteResult.ScenarioSummary scenarioSummary : suiteResult.scenarioSummaries()) {
             builder.append("| ")
                     .append(scenarioSummary.scenarioId())
+                    .append(" | ")
+                    .append(scenarioSummary.scenarioName())
                     .append(" | ")
                     .append(scenarioSummary.groundTruthCount())
                     .append(" | ");

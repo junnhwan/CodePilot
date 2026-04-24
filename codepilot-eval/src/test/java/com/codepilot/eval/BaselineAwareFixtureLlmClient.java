@@ -68,6 +68,27 @@ final class BaselineAwareFixtureLlmClient implements LlmClient {
                     }
                     """);
         }
+        if (taskType == ReviewTask.TaskType.SECURITY
+                && userPrompt.contains("ghp_demo_insecure_token")) {
+            return deliver("""
+                    {
+                      "decision": "DELIVER",
+                      "findings": [
+                        {
+                          "file": "src/main/java/com/example/github/GitHubWebhookClient.java",
+                          "line": 4,
+                          "severity": "HIGH",
+                          "confidence": 0.94,
+                          "category": "security",
+                          "title": "Hardcoded API token",
+                          "description": "A fallback GitHub token is hardcoded in source code.",
+                          "suggestion": "Load the token from a secret store or environment variable.",
+                          "evidence": ["The diff assigns FALLBACK_GITHUB_TOKEN to a literal value."]
+                        }
+                      ]
+                    }
+                    """);
+        }
         if (taskType == ReviewTask.TaskType.PERF
                 && userPrompt.contains("orderRepository.findById(orderId)")) {
             return deliver("""
@@ -84,6 +105,27 @@ final class BaselineAwareFixtureLlmClient implements LlmClient {
                           "description": "The diff introduces one repository lookup per order id.",
                           "suggestion": "Batch load the orders outside the loop.",
                           "evidence": ["The changed loop performs orderRepository.findById(orderId) on each iteration."]
+                        }
+                      ]
+                    }
+                    """);
+        }
+        if (taskType == ReviewTask.TaskType.PERF
+                && userPrompt.contains("invoiceRepository.findById(invoiceId)")) {
+            return deliver("""
+                    {
+                      "decision": "DELIVER",
+                      "findings": [
+                        {
+                          "file": "src/main/java/com/example/invoice/InvoiceAggregationService.java",
+                          "line": 10,
+                          "severity": "MEDIUM",
+                          "confidence": 0.92,
+                          "category": "perf",
+                          "title": "Repository call inside loop",
+                          "description": "The diff introduces one repository lookup per invoice id.",
+                          "suggestion": "Batch load the invoices outside the loop.",
+                          "evidence": ["The changed loop performs invoiceRepository.findById(invoiceId) on each iteration."]
                         }
                       ]
                     }
@@ -106,6 +148,27 @@ final class BaselineAwareFixtureLlmClient implements LlmClient {
                           "description": "The project token reaches tokenRepository without the known TokenGuard check.",
                           "suggestion": "Call tokenGuard.requireProjectAccess(projectToken) before the repository lookup.",
                           "evidence": ["The diff reads from tokenRepository directly and the recalled memory pattern requires TokenGuard first."]
+                        }
+                      ]
+                    }
+                    """);
+        }
+        if (taskType == ReviewTask.TaskType.MAINTAIN
+                && userPrompt.contains("catch (IOException error)")) {
+            return deliver("""
+                    {
+                      "decision": "DELIVER",
+                      "findings": [
+                        {
+                          "file": "src/main/java/com/example/audit/WebhookAuditWriter.java",
+                          "line": 9,
+                          "severity": "MEDIUM",
+                          "confidence": 0.89,
+                          "category": "maintain",
+                          "title": "Exception swallowed",
+                          "description": "The catch block ignores IOException instead of surfacing or logging it.",
+                          "suggestion": "Log the exception or rethrow it as an explicit failure.",
+                          "evidence": ["The added catch block contains only an ignore comment."]
                         }
                       ]
                     }
@@ -204,6 +267,46 @@ final class BaselineAwareFixtureLlmClient implements LlmClient {
                           "description": "Each iteration performs a repository lookup.",
                           "suggestion": "Batch the lookup or prefetch outside the loop.",
                           "evidence": ["The for-loop invokes orderRepository.findById(orderId) every time."]
+                        }
+                      ]
+                    }
+                    """);
+        }
+        if (userPrompt.contains("invoiceRepository.findById(invoiceId)")) {
+            return deliver("""
+                    {
+                      "decision": "DELIVER",
+                      "findings": [
+                        {
+                          "file": "src/main/java/com/example/invoice/InvoiceAggregationService.java",
+                          "line": 10,
+                          "severity": "MEDIUM",
+                          "confidence": 0.86,
+                          "category": "perf",
+                          "title": "Repository call inside loop",
+                          "description": "Each iteration performs a repository lookup.",
+                          "suggestion": "Batch the lookup or prefetch outside the loop.",
+                          "evidence": ["The for-loop invokes invoiceRepository.findById(invoiceId) every time."]
+                        }
+                      ]
+                    }
+                    """);
+        }
+        if (userPrompt.contains("ghp_demo_insecure_token")) {
+            return deliver("""
+                    {
+                      "decision": "DELIVER",
+                      "findings": [
+                        {
+                          "file": "src/main/java/com/example/github/GitHubWebhookClient.java",
+                          "line": 4,
+                          "severity": "HIGH",
+                          "confidence": 0.9,
+                          "category": "security",
+                          "title": "Hardcoded API token",
+                          "description": "A credential-like token is committed in source code.",
+                          "suggestion": "Move the token to runtime configuration or a secret manager.",
+                          "evidence": ["FALLBACK_GITHUB_TOKEN is assigned to a hardcoded literal."]
                         }
                       ]
                     }
