@@ -4,6 +4,7 @@ import com.codepilot.core.domain.agent.AgentDefinition;
 import com.codepilot.core.domain.context.ContextPack;
 import com.codepilot.core.domain.llm.LlmMessage;
 import com.codepilot.core.domain.llm.ToolDefinition;
+import com.codepilot.core.domain.memory.GlobalKnowledgeEntry;
 import com.codepilot.core.domain.memory.ReviewPattern;
 import com.codepilot.core.domain.memory.TeamConvention;
 import com.codepilot.core.domain.plan.ReviewTask;
@@ -40,6 +41,17 @@ public final class ReviewPromptTemplates {
                 .map(convention -> "- [%s] %s".formatted(convention.category(), convention.rule()))
                 .collect(Collectors.joining("\n"));
 
+        List<GlobalKnowledgeEntry> recalledGlobalKnowledge = globalKnowledgeForTask(reviewTask, contextPack);
+        String globalKnowledge = recalledGlobalKnowledge.isEmpty()
+                ? "None"
+                : recalledGlobalKnowledge.stream()
+                .map(entry -> "- [%s] %s | %s".formatted(
+                        entry.taskType(),
+                        entry.title(),
+                        entry.guidance()
+                ))
+                .collect(Collectors.joining("\n"));
+
         String tools = toolDefinitions.stream()
                 .map(tool -> "- %s: %s | parameters=%s".formatted(tool.name(), tool.description(), tool.parameters()))
                 .collect(Collectors.joining("\n"));
@@ -62,6 +74,9 @@ public final class ReviewPromptTemplates {
                 Project memory patterns:
                 %s
 
+                Global knowledge fallback:
+                %s
+
                 Available tools:
                 %s
 
@@ -74,6 +89,7 @@ public final class ReviewPromptTemplates {
                 Review rules:
                 - Only report issues you can justify from the diff or tool evidence.
                 - Findings must stay in REPORTED state; confirmation happens later in the pipeline.
+                - Project memory is project-specific and takes priority over global knowledge when both apply.
                 - If there is no issue, DELIVER with an empty findings array.
                 - This review loop currently supports CALL_TOOL and DELIVER only. Do not request extra context.
                 - Return valid JSON when you are not using native tool calling.
@@ -86,6 +102,7 @@ public final class ReviewPromptTemplates {
                 agentDefinition.focusAreas(),
                 conventions,
                 patterns,
+                globalKnowledge,
                 tools
         );
 
@@ -163,6 +180,12 @@ public final class ReviewPromptTemplates {
                             || convention.category() == TeamConvention.Category.DEPENDENCY
                             || convention.category() == TeamConvention.Category.NAMING;
                 })
+                .toList();
+    }
+
+    private static List<GlobalKnowledgeEntry> globalKnowledgeForTask(ReviewTask reviewTask, ContextPack contextPack) {
+        return contextPack.globalKnowledge().stream()
+                .filter(entry -> entry.taskType() == reviewTask.type())
                 .toList();
     }
 }

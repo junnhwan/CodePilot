@@ -102,4 +102,66 @@ class MemoryServiceTest {
                 .contains("conv-gateway")
                 .doesNotContain("conv-logging");
     }
+
+    @Test
+    void prioritizesTitleHitsBeforeLooserDescriptionMatchesWhenRankingPatterns() {
+        ProjectMemory source = ProjectMemory.empty("project-alpha")
+                .addPattern(new ReviewPattern(
+                        "pattern-title-first",
+                        "project-alpha",
+                        ReviewPattern.PatternType.SECURITY_PATTERN,
+                        "Token guard before repository access",
+                        "Use the project guard helper before loading protected records.",
+                        "accessGuard.check(token)",
+                        1,
+                        Instant.parse("2026-04-24T00:00:00Z")
+                ))
+                .addPattern(new ReviewPattern(
+                        "pattern-description-heavy",
+                        "project-alpha",
+                        ReviewPattern.PatternType.SECURITY_PATTERN,
+                        "Repository access rules",
+                        "Missing token guard before repository access can expose project data.",
+                        "repository.loadProjectByToken(token)",
+                        4,
+                        Instant.parse("2026-04-23T00:00:00Z")
+                ));
+
+        DiffSummary diffSummary = DiffSummary.of(List.of(
+                new DiffSummary.ChangedFile(
+                        "src/main/java/com/example/security/ProjectAccessService.java",
+                        DiffSummary.ChangeType.MODIFIED,
+                        6,
+                        1,
+                        List.of("ProjectAccessService#loadProject")
+                )
+        ));
+        ImpactSet impactSet = new ImpactSet(
+                Set.of(
+                        "src/main/java/com/example/security/ProjectAccessService.java",
+                        "src/main/java/com/example/repository/ProjectRepository.java"
+                ),
+                Set.of("ProjectRepository#loadProjectByToken", "AccessGuard#check"),
+                List.of(List.of("ProjectAccessService#loadProject", "ProjectRepository#loadProjectByToken"))
+        );
+
+        MemoryService memoryService = new MemoryService(new TokenCounter(), 1, 1);
+        ProjectMemory recalled = memoryService.recall(
+                source,
+                diffSummary,
+                impactSet,
+                """
+                diff --git a/src/main/java/com/example/security/ProjectAccessService.java b/src/main/java/com/example/security/ProjectAccessService.java
+                @@ -20,0 +21,4 @@
+                +    Project loadProject(String token) {
+                +        return repository.loadProjectByToken(token);
+                +    }
+                """,
+                180
+        );
+
+        assertThat(recalled.reviewPatterns())
+                .extracting(ReviewPattern::patternId)
+                .containsExactly("pattern-title-first");
+    }
 }

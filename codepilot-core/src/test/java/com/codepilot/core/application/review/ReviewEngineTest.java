@@ -213,16 +213,17 @@ class ReviewEngineTest {
                                 List.of("A#m")
                         ))),
                         new ImpactSet(Set.of("A.java"), Set.of(), List.of()),
-                        List.of(new ContextPack.CodeSnippet(
-                                "A.java",
-                                1,
-                                1,
-                                "x",
-                                "Changed hunk"
-                        )),
-                        ProjectMemory.empty("project-alpha"),
-                        new ContextPack.TokenBudget(700, 60, 120)
-                )
+                List.of(new ContextPack.CodeSnippet(
+                        "A.java",
+                        1,
+                        1,
+                        "x",
+                        "Changed hunk"
+                )),
+                ProjectMemory.empty("project-alpha"),
+                List.of(),
+                new ContextPack.TokenBudget(700, 60, 120)
+        )
         );
 
         assertThat(reviewResult.partial()).isFalse();
@@ -354,6 +355,7 @@ class ReviewEngineTest {
                         "Changed hunk"
                 )),
                 ProjectMemory.empty("project-alpha"),
+                List.of(),
                 new ContextPack.TokenBudget(totalTokens, reservedTokens, Math.min(320, totalTokens))
         );
     }

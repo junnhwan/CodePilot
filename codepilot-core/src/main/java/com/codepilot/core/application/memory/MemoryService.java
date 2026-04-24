@@ -67,7 +67,7 @@ public final class MemoryService {
             return ProjectMemory.empty(projectMemory.projectId());
         }
 
-        Set<String> queryTokens = collectQueryTokens(diffSummary, impactSet, rawDiff);
+        Set<String> queryTokens = buildQueryTokens(diffSummary, impactSet, rawDiff);
         if (queryTokens.isEmpty()) {
             return ProjectMemory.empty(projectMemory.projectId());
         }
@@ -82,6 +82,14 @@ public final class MemoryService {
         );
 
         return new ProjectMemory(projectMemory.projectId(), reviewPatterns, teamConventions);
+    }
+
+    public Set<String> buildQueryTokens(
+            DiffSummary diffSummary,
+            ImpactSet impactSet,
+            String rawDiff
+    ) {
+        return collectQueryTokens(diffSummary, impactSet, rawDiff);
     }
 
     private List<ReviewPattern> selectPatterns(
@@ -178,7 +186,7 @@ public final class MemoryService {
         if (lexicalScore <= 0.0d) {
             return 0.0d;
         }
-        return lexicalScore + Math.min(reviewPattern.frequency(), 10) * 0.1d;
+        return lexicalScore + Math.min(reviewPattern.frequency(), 10) * 0.15d;
     }
 
     private double conventionScore(TeamConvention teamConvention, Set<String> queryTokens) {
@@ -191,17 +199,31 @@ public final class MemoryService {
         if (lexicalScore <= 0.0d) {
             return 0.0d;
         }
-        return lexicalScore + teamConvention.confidence() * 0.1d;
+        return lexicalScore + teamConvention.confidence() * 0.4d;
     }
 
     private double lexicalScore(Set<String> queryTokens, String... texts) {
+        return weightedScore(queryTokens, texts);
+    }
+
+    private double weightedScore(Set<String> queryTokens, String... texts) {
+        double[] weights = switch (texts.length) {
+            case 3 -> new double[]{4.0d, 1.25d, 1.5d};
+            default -> new double[]{3.0d, 1.25d, 1.25d};
+        };
         double score = 0.0d;
-        for (String text : texts) {
-            Set<String> fieldTokens = tokenize(text);
-            for (String token : queryTokens) {
-                if (fieldTokens.contains(token)) {
-                    score += 1.0d;
-                }
+        for (int i = 0; i < texts.length; i++) {
+            double weight = i < weights.length ? weights[i] : 1.0d;
+            score += overlapScore(queryTokens, tokenize(texts[i])) * weight;
+        }
+        return score;
+    }
+
+    private double overlapScore(Set<String> queryTokens, Set<String> fieldTokens) {
+        double score = 0.0d;
+        for (String token : queryTokens) {
+            if (fieldTokens.contains(token)) {
+                score += 1.0d;
             }
         }
         return score;

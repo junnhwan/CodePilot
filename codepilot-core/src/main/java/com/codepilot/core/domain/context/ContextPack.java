@@ -1,6 +1,7 @@
 package com.codepilot.core.domain.context;
 
 import com.codepilot.core.domain.DomainRuleViolationException;
+import com.codepilot.core.domain.memory.GlobalKnowledgeEntry;
 import com.codepilot.core.domain.memory.ProjectMemory;
 
 import java.util.ArrayList;
@@ -15,6 +16,7 @@ public record ContextPack(
         ImpactSet impactSet,
         List<CodeSnippet> snippets,
         ProjectMemory projectMemory,
+        List<GlobalKnowledgeEntry> globalKnowledge,
         TokenBudget tokenBudget
 ) {
 
@@ -34,6 +36,9 @@ public record ContextPack(
         if (projectMemory == null) {
             throw new DomainRuleViolationException("ContextPack projectMemory must not be null");
         }
+        globalKnowledge = globalKnowledge == null
+                ? List.of()
+                : Collections.unmodifiableList(new ArrayList<>(globalKnowledge));
         if (tokenBudget == null) {
             throw new DomainRuleViolationException("ContextPack tokenBudget must not be null");
         }

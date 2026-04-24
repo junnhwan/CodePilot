@@ -1,0 +1,41 @@
+[
+  {
+    "entryId": "security-sql-001",
+    "taskType": "SECURITY",
+    "title": "Parameterized queries required",
+    "guidance": "Avoid string-built SQL and require prepared statements for repository queries.",
+    "triggerTokens": [
+      "sql",
+      "query",
+      "repository",
+      "jdbc",
+      "statement"
+    ]
+  },
+  {
+    "entryId": "security-token-001",
+    "taskType": "SECURITY",
+    "title": "Token guard before repository access",
+    "guidance": "Validate project access tokens before invoking protected repository methods.",
+    "triggerTokens": [
+      "token",
+      "guard",
+      "repository",
+      "access",
+      "authorization"
+    ]
+  },
+  {
+    "entryId": "perf-loop-001",
+    "taskType": "PERF",
+    "title": "Batch repository lookups in loops",
+    "guidance": "Avoid repeated repository calls inside loops and prefer batch reads or prefetching.",
+    "triggerTokens": [
+      "loop",
+      "repository",
+      "batch",
+      "query",
+      "findall"
+    ]
+  }
+]

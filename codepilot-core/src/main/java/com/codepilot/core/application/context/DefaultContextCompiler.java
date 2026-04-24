@@ -1,11 +1,13 @@
 package com.codepilot.core.application.context;
 
+import com.codepilot.core.application.memory.GlobalKnowledgeService;
 import com.codepilot.core.application.memory.MemoryService;
 import com.codepilot.core.application.review.TokenCounter;
 import com.codepilot.core.domain.context.AstParser;
 import com.codepilot.core.domain.context.CompilationStrategy;
 import com.codepilot.core.domain.context.ContextCompiler;
 import com.codepilot.core.domain.context.ContextPack;
+import com.codepilot.core.domain.memory.GlobalKnowledgeEntry;
 import com.codepilot.core.domain.memory.ProjectMemory;
 
 import java.io.IOException;
@@ -32,6 +34,8 @@ public final class DefaultContextCompiler implements ContextCompiler {
 
     private final MemoryService memoryService;
 
+    private final GlobalKnowledgeService globalKnowledgeService;
+
     public DefaultContextCompiler(
             DiffAnalyzer diffAnalyzer,
             AstParser astParser,
@@ -40,12 +44,33 @@ public final class DefaultContextCompiler implements ContextCompiler {
             CompilationStrategy compilationStrategy,
             MemoryService memoryService
     ) {
+        this(
+                diffAnalyzer,
+                astParser,
+                impactCalculator,
+                tokenCounter,
+                compilationStrategy,
+                memoryService,
+                new GlobalKnowledgeService()
+        );
+    }
+
+    public DefaultContextCompiler(
+            DiffAnalyzer diffAnalyzer,
+            AstParser astParser,
+            ImpactCalculator impactCalculator,
+            TokenCounter tokenCounter,
+            CompilationStrategy compilationStrategy,
+            MemoryService memoryService,
+            GlobalKnowledgeService globalKnowledgeService
+    ) {
         this.diffAnalyzer = diffAnalyzer;
         this.astParser = astParser;
         this.impactCalculator = impactCalculator;
         this.tokenCounter = tokenCounter;
         this.compilationStrategy = compilationStrategy;
         this.memoryService = memoryService;
+        this.globalKnowledgeService = globalKnowledgeService;
     }
 
     @Override
@@ -77,6 +102,11 @@ public final class DefaultContextCompiler implements ContextCompiler {
                 astParser,
                 compilationStrategy
         );
+        Set<String> queryTokens = memoryService.buildQueryTokens(
+                impactAnalysis.diffSummary(),
+                impactAnalysis.impactSet(),
+                rawDiff
+        );
         ProjectMemory recalledMemory = memoryService.recall(
                 projectMemory,
                 impactAnalysis.diffSummary(),
@@ -84,6 +114,11 @@ public final class DefaultContextCompiler implements ContextCompiler {
                 rawDiff,
                 compilationStrategy.tokenBudget().memories()
         );
+        int remainingKnowledgeBudget = Math.max(
+                compilationStrategy.tokenBudget().memories() - tokenCounter.countText(memorySummary(recalledMemory)),
+                0
+        );
+        List<GlobalKnowledgeEntry> globalKnowledge = globalKnowledgeService.recall(queryTokens, remainingKnowledgeBudget);
 
         List<SnippetCandidate> candidates = new ArrayList<>();
         addChangedFileSnippets(normalizedRepoRoot, diffAnalysis, candidates);
@@ -104,6 +139,7 @@ public final class DefaultContextCompiler implements ContextCompiler {
             usedTokens += tokenCounter.countText(snippet.content());
         }
         usedTokens += tokenCounter.countText(memorySummary(recalledMemory));
+        usedTokens += tokenCounter.countText(globalKnowledgeSummary(globalKnowledge));
         usedTokens = Math.min(usedTokens, compilationStrategy.tokenBudget().total());
 
         return new ContextPack(
@@ -112,6 +148,7 @@ public final class DefaultContextCompiler implements ContextCompiler {
                 impactAnalysis.impactSet(),
                 snippets,
                 recalledMemory,
+                globalKnowledge,
                 new ContextPack.TokenBudget(
                         compilationStrategy.tokenBudget().total(),
                         compilationStrategy.tokenBudget().reserve(),
@@ -268,6 +305,15 @@ public final class DefaultContextCompiler implements ContextCompiler {
                 .append(convention.exampleGood())
                 .append(System.lineSeparator())
                 .append(convention.exampleBad())
+                .append(System.lineSeparator()));
+        return builder.toString();
+    }
+
+    private String globalKnowledgeSummary(List<GlobalKnowledgeEntry> globalKnowledge) {
+        StringBuilder builder = new StringBuilder();
+        globalKnowledge.forEach(entry -> builder.append(entry.title())
+                .append(System.lineSeparator())
+                .append(entry.guidance())
                 .append(System.lineSeparator()));
         return builder.toString();
     }

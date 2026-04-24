@@ -419,6 +419,27 @@
   - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 71 个测试全部通过，`core / gateway / eval / mcp-server / cli` 无回退
   - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
 
+### P15 Project Memory 检索增强 + Global Knowledge 最小注入
+
+- 目标
+  - 在现有 P9 词法 recall 基础上，补一版更稳定的 `ProjectMemory` 排序策略，并把最小 `Global Knowledge` 以只读方式注入 `ContextPack`
+  - 保持现有 `Planning -> Context Compiler -> Multi-Agent Review -> Merge -> Report -> Dream` 主链不重写，只增强 `codepilot-core` 内的 recall / compile / prompt 细节
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 新增 `GlobalKnowledgeEntry` 与 `GlobalKnowledgeService`，通过资源文件 `global-knowledge/security-and-perf.json` 提供最小只读通用知识源；当前先覆盖安全 / 性能高信号 guidance，不引入 Dream 编辑逻辑或远程知识库
+  - `MemoryService` 已从“纯词法命中数”升级为“字段加权 + 频次 / 置信度补权”的排序策略：title / rule 命中优先于 description / example 的松散命中，同时继续保持无 `PgVector` 时可独立运行
+  - `DefaultContextCompiler` 已显式区分 `ProjectMemory` 与 `GlobalKnowledge`：先用 `ProjectMemory` 消耗 memory token budget，再把剩余预算分配给 `GlobalKnowledge`，确保项目记忆优先、通用知识兜底
+  - `ContextPack` 新增 `globalKnowledge` 字段，`ReviewPromptTemplates` 也已分开渲染 `Team conventions`、`Project memory patterns` 和 `Global knowledge fallback`，并显式声明“项目记忆优先于通用知识”
+  - 新增/扩展测试：`GlobalKnowledgeServiceTest` 覆盖安全知识召回；`MemoryServiceTest` 覆盖字段加权后的排序稳定性；`DefaultContextCompilerTest` 覆盖 security task 的 global knowledge 注入、style task 的错误隔离，以及“预算紧张时先保 project memory”的边界；`ReviewEngineTest` 同步适配新的 `ContextPack` 结构
+- 验收结果
+  - `2026-04-24` 先执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=GlobalKnowledgeServiceTest,MemoryServiceTest,DefaultContextCompilerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，确认失败原因来自 `GlobalKnowledgeEntry / GlobalKnowledgeService` 缺失，符合 TDD 预期
+  - `2026-04-24` 实现后执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=GlobalKnowledgeServiceTest,MemoryServiceTest,DefaultContextCompilerTest,ReviewEngineTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P15 核心定向测试全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 75 个测试全部通过，`core / gateway / eval / mcp-server / cli` 无回退
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
+
 ---
 
 ## 延期清单
