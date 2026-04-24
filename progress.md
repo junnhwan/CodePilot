@@ -396,6 +396,29 @@
   - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-eval -am package -DskipTests`，成功生成可执行 `codepilot-eval-0.1.0-SNAPSHOT.jar`
   - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
 
+### P14 Dream 最小记忆沉淀闭环
+
+- 目标
+  - 让 `REVIEW_COMPLETED != MEMORY_UPDATED` 从设计约束落到真实代码：review 完成后独立执行 Dream，分析 `ReviewResult` 并回写 `ProjectMemoryRepository`
+  - 保持现有 `Planning -> Context Compiler -> Multi-Agent Review -> Merge -> Report` 主链不重写，只在 review/report 成功后追加最小 Dream 后处理
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 新增 `domain/memory/MemoryPlan` 与 `application/memory/DreamService`，落地最小 Dream 两阶段闭环：Phase 1 从 `ReviewResult` 中筛选高置信度、高信号 finding，生成待沉淀的 `ReviewPattern`；Phase 2 将其幂等并入 `ProjectMemory`
+  - `ProjectMemoryRepository` 新增 `load(projectId)` 便捷读取语义，避免 Dream / CLI / Gateway 在应用层重复拼装 “find or empty” 胶水代码
+  - `DreamService` 当前对重复 Dream 做最小幂等保护：同一 pattern 在 `lastSeenAt` 未推进时不会重复插入或重复累计频次；仓储保存失败时会带 `projectId + sessionId` 上下文抛出异常
+  - `codepilot-gateway` 的 `GitHubReviewWorker` 已在 report 完成并标记 `DONE` 后独立触发 Dream；Dream 失败只记日志，不会把已完成 review 反向改成 `FAILED`
+  - `codepilot-cli` 的 `LocalReviewRunner` 已复用同一 `DreamService`，并以内存版 `ProjectMemoryRepository` 保存本地会话的最小沉淀结果，避免在 CLI 中重新实现一套 Dream 逻辑
+  - 新增/扩展测试：`DreamServiceTest` 覆盖成功沉淀、空沉淀、低置信度过滤、重复 Dream 幂等、保存失败上下文；`GitHubReviewWorkerTest` 覆盖 Gateway 成功沉淀与 Dream 失败不回滚 review；`LocalReviewRunnerTest` 覆盖 CLI review 结束后的 memory 写回
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=DreamServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，Dream 核心定向测试 5 项全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-gateway -am "-Dtest=GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，Gateway Dream 接入与失败语义测试 3 项全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-cli -am "-Dtest=LocalReviewRunnerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，CLI Dream 接入测试通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 71 个测试全部通过，`core / gateway / eval / mcp-server / cli` 无回退
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
+
 ---
 
 ## 延期清单

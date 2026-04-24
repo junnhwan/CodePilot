@@ -1,6 +1,7 @@
 package com.codepilot.gateway.review;
 
 import com.codepilot.core.application.context.DiffAnalyzer;
+import com.codepilot.core.application.memory.DreamService;
 import com.codepilot.core.application.plan.PlanningAgent;
 import com.codepilot.core.application.review.MergeAgent;
 import com.codepilot.core.application.review.ReviewEngine;
@@ -36,6 +37,8 @@ import com.codepilot.gateway.github.GitHubCommentWriter;
 import com.codepilot.gateway.github.GitHubPullRequestClient;
 import com.codepilot.gateway.github.GitHubPullRequestEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -49,6 +52,8 @@ import java.util.Map;
 
 @Component
 public class GitHubReviewWorker {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(GitHubReviewWorker.class);
 
     private final RedisStreamReviewEventBuffer eventBuffer;
 
@@ -65,6 +70,8 @@ public class GitHubReviewWorker {
     private final LlmClient llmClient;
 
     private final ProjectMemoryRepository projectMemoryRepository;
+
+    private final DreamService dreamService;
 
     private final DiffAnalyzer diffAnalyzer;
 
@@ -135,6 +142,7 @@ public class GitHubReviewWorker {
         this.sseBroadcaster = sseBroadcaster;
         this.llmClient = llmClient;
         this.projectMemoryRepository = projectMemoryRepository;
+        this.dreamService = new DreamService(projectMemoryRepository);
         this.diffAnalyzer = diffAnalyzer;
         this.contextCompiler = contextCompiler;
         this.objectMapper = objectMapper;
@@ -260,6 +268,7 @@ public class GitHubReviewWorker {
                     "partial", reviewResult.partial()
             ));
             sseBroadcaster.complete(event.sessionId());
+            dreamSafely(event.projectId(), reviewResult);
         }
     }
 
@@ -306,6 +315,19 @@ public class GitHubReviewWorker {
                 new ReviewerPool(),
                 new MergeAgent()
         );
+    }
+
+    private void dreamSafely(String projectId, ReviewResult reviewResult) {
+        try {
+            dreamService.dream(projectId, reviewResult);
+        } catch (RuntimeException exception) {
+            LOGGER.warn(
+                    "Dream persistence failed for projectId={} sessionId={}",
+                    projectId,
+                    reviewResult.sessionId(),
+                    exception
+            );
+        }
     }
 
     private void appendEvent(String sessionId, SessionEvent.Type type, Map<String, Object> payload) {

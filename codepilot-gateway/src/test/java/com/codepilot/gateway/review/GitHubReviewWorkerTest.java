@@ -58,13 +58,11 @@ class GitHubReviewWorkerTest {
         RedisStreamReviewEventBuffer eventBuffer = mock(RedisStreamReviewEventBuffer.class);
         GitHubPullRequestClient pullRequestClient = mock(GitHubPullRequestClient.class);
         GitHubCommentWriter commentWriter = mock(GitHubCommentWriter.class);
-        ProjectMemoryRepository projectMemoryRepository = new ProjectMemoryRepository() {
-            @Override
-            public Optional<ProjectMemory> findByProjectId(String projectId) {
-                return Optional.of(ProjectMemory.empty(projectId)
+        RecordingProjectMemoryRepository projectMemoryRepository = new RecordingProjectMemoryRepository(
+                ProjectMemory.empty("acme/repo")
                         .addPattern(new ReviewPattern(
                                 "pattern-1",
-                                projectId,
+                                "acme/repo",
                                 ReviewPattern.PatternType.SECURITY_PATTERN,
                                 "Validation missing before repository call",
                                 "Controllers in this project often skip validation before DAO access.",
@@ -74,7 +72,7 @@ class GitHubReviewWorkerTest {
                         ))
                         .addConvention(new TeamConvention(
                                 "conv-1",
-                                projectId,
+                                "acme/repo",
                                 TeamConvention.Category.SECURITY,
                                 "Controllers must validate request input before repository access.",
                                 "validator.check(request); repository.findById(request.userId());",
@@ -84,21 +82,15 @@ class GitHubReviewWorkerTest {
                         ))
                         .addConvention(new TeamConvention(
                                 "conv-2",
-                                projectId,
+                                "acme/repo",
                                 TeamConvention.Category.FORMAT,
                                 "Use Slf4j instead of direct System.out printing.",
                                 "log.info(\"created\")",
                                 "System.out.println(created)",
                                 0.70d,
                                 TeamConvention.Source.MANUAL
-                        )));
-            }
-
-            @Override
-            public void save(ProjectMemory projectMemory) {
-                throw new UnsupportedOperationException("save is not used in this test");
-            }
-        };
+                        ))
+        );
 
         GitHubPullRequestEvent event = new GitHubPullRequestEvent(
                 "session-1",
@@ -196,6 +188,101 @@ class GitHubReviewWorkerTest {
                 .hasSize(4);
         verify(commentWriter).writeReview(any(), any());
         verify(eventBuffer).remove("171-0");
+        assertThat(projectMemoryRepository.load("acme/repo").reviewPatterns())
+                .extracting(ReviewPattern::title)
+                .contains("Potential SQL injection risk");
+        assertThat(projectMemoryRepository.saveCount()).isEqualTo(1);
+    }
+
+    @Test
+    void keepsReviewDoneWhenDreamPersistenceFails() {
+        ObjectMapper objectMapper = JsonMapper.builder().findAndAddModules().build();
+        ReviewSessionRepository repository = new InMemoryReviewSessionRepository();
+        ReviewSseBroadcaster broadcaster = new ReviewSseBroadcaster();
+        RedisStreamReviewEventBuffer eventBuffer = mock(RedisStreamReviewEventBuffer.class);
+        GitHubPullRequestClient pullRequestClient = mock(GitHubPullRequestClient.class);
+        GitHubCommentWriter commentWriter = mock(GitHubCommentWriter.class);
+        RecordingProjectMemoryRepository projectMemoryRepository = new RecordingProjectMemoryRepository(
+                ProjectMemory.empty("acme/repo")
+        );
+        projectMemoryRepository.failOnSave(new IllegalStateException("storage offline"));
+
+        GitHubPullRequestEvent event = new GitHubPullRequestEvent(
+                "session-dream-fail",
+                "acme/repo",
+                "acme",
+                "repo",
+                99,
+                "https://github.com/acme/repo/pull/99",
+                "head-sha",
+                "base-sha"
+        );
+        repository.save(ReviewSession.initialize(
+                "session-dream-fail",
+                "acme/repo",
+                99,
+                "https://github.com/acme/repo/pull/99",
+                Instant.parse("2026-04-24T10:00:00Z")
+        ));
+
+        when(eventBuffer.readPending(10)).thenReturn(List.of(new RedisStreamReviewEventBuffer.BufferedReviewEvent("191-0", event)));
+        when(pullRequestClient.fetchPullRequestDiff("acme", "repo", 99)).thenReturn("""
+                diff --git a/src/main/java/com/example/UserRepository.java b/src/main/java/com/example/UserRepository.java
+                @@ -1,1 +1,6 @@
+                +package com.example;
+                +
+                +class UserRepository {
+                +  String findByName(String name) {
+                +    return jdbcTemplate.queryForObject("select * from users where name = '" + name + "'", String.class);
+                +  }
+                +}
+                """);
+        when(pullRequestClient.fetchPullRequestFiles("acme", "repo", 99, "head-sha"))
+                .thenReturn(List.of(new GitHubPullRequestClient.PullRequestFileSnapshot(
+                        "src/main/java/com/example/UserRepository.java",
+                        "modified",
+                        """
+                        package com.example;
+
+                        class UserRepository {
+                            String findByName(String name) {
+                                return jdbcTemplate.queryForObject("select * from users where name = '" + name + "'", String.class);
+                            }
+                        }
+                        """
+                )));
+
+        GitHubReviewWorker worker = new GitHubReviewWorker(
+                eventBuffer,
+                repository,
+                pullRequestClient,
+                commentWriter,
+                broadcaster,
+                new FindingOnlyLlmClient(),
+                projectMemoryRepository,
+                new DiffAnalyzer(),
+                new DefaultContextCompiler(
+                        new DiffAnalyzer(),
+                        new JavaParserAstParser(),
+                        new ImpactCalculator(),
+                        new TokenCounter(),
+                        new ClasspathCompilationStrategyLoader(objectMapper).load("java-springboot-maven"),
+                        new MemoryService(new TokenCounter())
+                ),
+                objectMapper,
+                new TokenCounter(),
+                "mock-review-model",
+                Map.of(),
+                4
+        );
+
+        worker.processPendingEvents();
+
+        ReviewSession stored = repository.findById("session-dream-fail").orElseThrow();
+        assertThat(stored.state()).isEqualTo(AgentState.DONE);
+        assertThat(projectMemoryRepository.saveCount()).isEqualTo(1);
+        verify(commentWriter).writeReview(any(), any());
+        verify(eventBuffer).remove("191-0");
     }
 
     @Test
@@ -206,17 +293,9 @@ class GitHubReviewWorkerTest {
         RedisStreamReviewEventBuffer eventBuffer = mock(RedisStreamReviewEventBuffer.class);
         GitHubPullRequestClient pullRequestClient = mock(GitHubPullRequestClient.class);
         GitHubCommentWriter commentWriter = mock(GitHubCommentWriter.class);
-        ProjectMemoryRepository projectMemoryRepository = new ProjectMemoryRepository() {
-            @Override
-            public Optional<ProjectMemory> findByProjectId(String projectId) {
-                return Optional.of(ProjectMemory.empty(projectId));
-            }
-
-            @Override
-            public void save(ProjectMemory projectMemory) {
-                throw new UnsupportedOperationException("save is not used in this test");
-            }
-        };
+        RecordingProjectMemoryRepository projectMemoryRepository = new RecordingProjectMemoryRepository(
+                ProjectMemory.empty("acme/repo")
+        );
 
         GitHubPullRequestEvent event = new GitHubPullRequestEvent(
                 "session-resume",
@@ -470,6 +549,103 @@ class GitHubReviewWorkerTest {
 
         private List<ReviewTask.TaskType> seenTaskTypes() {
             return List.copyOf(seenTaskTypes);
+        }
+    }
+
+    private static final class FindingOnlyLlmClient implements LlmClient {
+
+        private static final Pattern TASK_TYPE_PATTERN = Pattern.compile("(?m)^- type: ([A-Z]+)$");
+
+        @Override
+        public LlmResponse chat(LlmRequest request) {
+            ReviewTask.TaskType taskType = taskType(request.messages());
+            if (taskType == ReviewTask.TaskType.SECURITY) {
+                return new LlmResponse(
+                        """
+                        {
+                          "decision": "DELIVER",
+                          "findings": [
+                            {
+                              "file": "src/main/java/com/example/UserRepository.java",
+                              "line": 4,
+                              "severity": "HIGH",
+                              "confidence": 0.97,
+                              "category": "security",
+                              "title": "Potential SQL injection risk",
+                              "description": "User input is concatenated directly into SQL.",
+                              "suggestion": "Use a parameterized query.",
+                              "evidence": ["The query interpolates name."]
+                            }
+                          ]
+                        }
+                        """,
+                        List.of(),
+                        new LlmUsage(140, 80, 220),
+                        "stop"
+                );
+            }
+            return new LlmResponse("""
+                    {
+                      "decision": "DELIVER",
+                      "findings": []
+                    }
+                    """, List.of(), new LlmUsage(90, 20, 110), "stop");
+        }
+
+        @Override
+        public Flux<LlmChunk> stream(LlmRequest request) {
+            throw new UnsupportedOperationException("stream is not used in this test");
+        }
+
+        private ReviewTask.TaskType taskType(List<LlmMessage> messages) {
+            String systemPrompt = messages.stream()
+                    .filter(message -> "system".equals(message.role()))
+                    .map(LlmMessage::content)
+                    .findFirst()
+                    .orElseThrow();
+            Matcher matcher = TASK_TYPE_PATTERN.matcher(systemPrompt);
+            if (!matcher.find()) {
+                throw new IllegalStateException("Unable to locate task type in system prompt");
+            }
+            return ReviewTask.TaskType.valueOf(matcher.group(1));
+        }
+    }
+
+    private static final class RecordingProjectMemoryRepository implements ProjectMemoryRepository {
+
+        private ProjectMemory projectMemory;
+
+        private RuntimeException saveFailure;
+
+        private int saveCount;
+
+        private RecordingProjectMemoryRepository(ProjectMemory projectMemory) {
+            this.projectMemory = projectMemory;
+        }
+
+        @Override
+        public Optional<ProjectMemory> findByProjectId(String projectId) {
+            if (projectMemory == null || !projectMemory.projectId().equals(projectId)) {
+                return Optional.empty();
+            }
+            return Optional.of(projectMemory);
+        }
+
+        @Override
+        public void save(ProjectMemory projectMemory) {
+            saveCount++;
+            if (saveFailure != null) {
+                throw saveFailure;
+            }
+            this.projectMemory = projectMemory;
+        }
+
+        private void failOnSave(RuntimeException saveFailure) {
+            this.saveFailure = saveFailure;
+        }
+
+        private int saveCount() {
+            return saveCount;
         }
     }
 }

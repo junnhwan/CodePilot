@@ -6,6 +6,9 @@ import com.codepilot.core.domain.llm.LlmMessage;
 import com.codepilot.core.domain.llm.LlmRequest;
 import com.codepilot.core.domain.llm.LlmResponse;
 import com.codepilot.core.domain.llm.LlmUsage;
+import com.codepilot.core.domain.memory.ProjectMemory;
+import com.codepilot.core.domain.memory.ProjectMemoryRepository;
+import com.codepilot.core.domain.memory.ReviewPattern;
 import com.codepilot.core.domain.plan.ReviewTask;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -16,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -55,7 +59,14 @@ class LocalReviewRunnerTest {
                 """);
 
         TaskAwareLlmClient llmClient = new TaskAwareLlmClient();
-        LocalReviewRunner runner = new LocalReviewRunner(llmClient);
+        RecordingProjectMemoryRepository projectMemoryRepository = new RecordingProjectMemoryRepository();
+        LocalReviewRunner runner = new LocalReviewRunner(
+                llmClient,
+                projectMemoryRepository,
+                "codepilot-cli-review",
+                Map.of(),
+                6
+        );
 
         var result = runner.run(diffFile, repoRoot);
 
@@ -69,6 +80,9 @@ class LocalReviewRunnerTest {
                         ReviewTask.TaskType.STYLE,
                         ReviewTask.TaskType.MAINTAIN
                 );
+        assertThat(projectMemoryRepository.load("cli-project").reviewPatterns())
+                .extracting(ReviewPattern::title)
+                .contains("SQL injection risk in query construction");
     }
 
     private static final class TaskAwareLlmClient implements LlmClient {
@@ -136,6 +150,24 @@ class LocalReviewRunnerTest {
 
         private List<ReviewTask.TaskType> seenTaskTypes() {
             return List.copyOf(seenTaskTypes);
+        }
+    }
+
+    private static final class RecordingProjectMemoryRepository implements ProjectMemoryRepository {
+
+        private ProjectMemory projectMemory;
+
+        @Override
+        public Optional<ProjectMemory> findByProjectId(String projectId) {
+            if (projectMemory == null || !projectId.equals(projectMemory.projectId())) {
+                return Optional.empty();
+            }
+            return Optional.of(projectMemory);
+        }
+
+        @Override
+        public void save(ProjectMemory projectMemory) {
+            this.projectMemory = projectMemory;
         }
     }
 }
