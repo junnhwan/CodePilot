@@ -248,7 +248,19 @@
 - 优先级
   - `P1`
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 新增 `PlanningAgent`，基于现有 `DiffAnalyzer` 做规则驱动规划：从 diff 生成 `ReviewPlan`，稳定产出 `SECURITY / PERF / STYLE / MAINTAIN` 四类任务，并按变更路径、内容信号和 diff 规模给出策略、优先级、`focusHints` 与基础依赖
+  - `codepilot-core` 新增 `ReviewerPool`、`ReviewOrchestrator`、`MergeAgent`，在不重造 Agent Loop 的前提下复用既有 `ReviewEngine`、`ContextCompiler`、`ContextGovernor`、`LoopDetector`，实现“单份 `ContextPack` + 多 reviewer + 无依赖并行/有依赖分波次执行 + merge 去重排序与低信号过滤”的 P8 最小闭环
+  - `MergeAgent` 明确保留 `FINDING_REPORTED != ISSUE_CONFIRMED` 语义：只合并 `REPORTED` findings，不做确认；对重复 finding 按严重度和置信度择优，并合并证据
+  - `codepilot-cli` 的 `LocalReviewRunner` 已切换到 Planning + Multi-Agent 主链，不再只跑单个 security reviewer
+  - `codepilot-gateway` 的 `GitHubReviewWorker` 已切换到 Planning + Multi-Agent 主链，先落 `plan_ready` 再执行同一份 plan；SSE 和 `SessionEvent` 能真实反映多任务执行过程
+  - `codepilot-core` 的 `InMemoryReviewSessionRepository` 补齐并发事件追加的线程安全，避免 P8 并行 reviewer 下丢失 `TASK_STARTED / TASK_COMPLETED / FINDING_REPORTED` 事件
+  - 新增/更新 P8 定向测试：`PlanningAgentTest`、`MergeAgentTest`、`ReviewOrchestratorTest`、`LocalReviewRunnerTest`、`GitHubReviewWorkerTest`；同时同步修正 `ReviewEngineTest` 的预算治理断言，使其对齐 P8 后更长的 reviewer prompt 与 compact 协议
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=PlanningAgentTest,MergeAgentTest,ReviewOrchestratorTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P8 core 定向测试全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-cli,codepilot-gateway -am "-Dtest=LocalReviewRunnerTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，CLI / Gateway 受影响链路测试全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 46 个测试全部通过
 
 ### P9 Memory 系统
 

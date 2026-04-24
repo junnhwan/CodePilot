@@ -1,22 +1,21 @@
 package com.codepilot.gateway.review;
 
 import com.codepilot.core.application.context.DiffAnalyzer;
+import com.codepilot.core.application.plan.PlanningAgent;
+import com.codepilot.core.application.review.MergeAgent;
 import com.codepilot.core.application.review.ReviewEngine;
+import com.codepilot.core.application.review.ReviewOrchestrator;
+import com.codepilot.core.application.review.ReviewerPool;
 import com.codepilot.core.application.review.TokenCounter;
 import com.codepilot.core.application.review.ToolCallParser;
 import com.codepilot.core.application.tool.ToolExecutor;
 import com.codepilot.core.application.tool.ToolRegistry;
-import com.codepilot.core.domain.agent.AgentDecision;
-import com.codepilot.core.domain.agent.AgentDefinition;
 import com.codepilot.core.domain.agent.AgentState;
 import com.codepilot.core.domain.context.ContextCompiler;
-import com.codepilot.core.domain.context.ContextPack;
-import com.codepilot.core.domain.context.DiffSummary;
 import com.codepilot.core.domain.llm.LlmClient;
+import com.codepilot.core.domain.memory.ProjectMemory;
 import com.codepilot.core.domain.memory.ProjectMemoryRepository;
 import com.codepilot.core.domain.plan.ReviewPlan;
-import com.codepilot.core.domain.plan.ReviewTask;
-import com.codepilot.core.domain.plan.TaskGraph;
 import com.codepilot.core.domain.review.Finding;
 import com.codepilot.core.domain.review.ReviewResult;
 import com.codepilot.core.domain.session.ReviewSession;
@@ -46,18 +45,9 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 @Component
 public class GitHubReviewWorker {
-
-    private static final AgentDefinition SECURITY_AGENT = new AgentDefinition(
-            "security-reviewer",
-            "Review changed code for high-signal security defects.",
-            Set.of(AgentState.REVIEWING),
-            Set.of(AgentDecision.Type.CALL_TOOL, AgentDecision.Type.DELIVER),
-            List.of("SQL injection", "unsafe input handling", "missing authorization")
-    );
 
     private final RedisStreamReviewEventBuffer eventBuffer;
 
@@ -167,40 +157,21 @@ public class GitHubReviewWorker {
         ReviewSession session = reviewSessionRepository.findById(event.sessionId())
                 .orElseThrow(() -> new IllegalStateException("Missing ReviewSession %s".formatted(event.sessionId())));
         String rawDiff = pullRequestClient.fetchPullRequestDiff(event.owner(), event.repository(), event.prNumber());
-        DiffAnalyzer.DiffAnalysis diffAnalysis = diffAnalyzer.analyze(rawDiff);
-        DiffSummary diffSummary = toDiffSummary(diffAnalysis);
-        ReviewTask plannedTask = buildTask(diffSummary);
-        ReviewPlan reviewPlan = new ReviewPlan(
-                "plan-" + event.sessionId(),
-                event.sessionId(),
-                diffSummary,
-                TaskGraph.of(List.of(plannedTask)),
-                ReviewPlan.ReviewStrategy.SECURITY_FIRST
-        );
+        ReviewPlan reviewPlan = new PlanningAgent(diffAnalyzer).plan(event.sessionId(), rawDiff);
 
         Instant now = Instant.now();
-        session = session.startPlanning(diffSummary, now);
+        session = session.startPlanning(reviewPlan.diffSummary(), now);
         reviewSessionRepository.save(session);
         session = session.attachPlan(reviewPlan, Instant.now());
         reviewSessionRepository.save(session);
         sseBroadcaster.publish(event.sessionId(), "plan_ready", Map.of(
                 "planId", reviewPlan.planId(),
-                "taskCount", 1
+                "taskCount", reviewPlan.taskGraph().allTasks().size(),
+                "strategy", reviewPlan.strategy().name()
         ));
 
         session = session.startReviewing(Instant.now());
         reviewSessionRepository.save(session);
-        ReviewTask activeTask = plannedTask.markReady().start();
-        appendEvent(event.sessionId(), SessionEvent.Type.TASK_STARTED, Map.of(
-                "taskId", activeTask.taskId(),
-                "type", activeTask.type().name(),
-                "files", activeTask.targetFiles()
-        ));
-        sseBroadcaster.publish(event.sessionId(), "task_started", Map.of(
-                "taskId", activeTask.taskId(),
-                "type", activeTask.type().name(),
-                "files", activeTask.targetFiles()
-        ));
 
         Path repoRoot = materializeWorkspace(event, pullRequestClient.fetchPullRequestFiles(
                 event.owner(),
@@ -209,49 +180,21 @@ public class GitHubReviewWorker {
                 event.headSha()
         ));
         try {
-            ContextPack contextPack = contextCompiler.compile(
+            ProjectMemory projectMemory = projectMemoryRepository.findByProjectId(event.projectId())
+                    .orElseGet(() -> ProjectMemory.empty(event.projectId()));
+            ReviewResult reviewResult = buildReviewOrchestrator(repoRoot, event.projectId()).execute(
+                    reviewPlan,
                     repoRoot,
                     rawDiff,
-                    com.codepilot.core.domain.memory.ProjectMemory.empty(event.projectId()),
+                    projectMemory,
                     Map.of(
                             "language", "java",
                             "entrypoint", "github-webhook",
                             "repository", event.projectId(),
                             "headSha", event.headSha()
-                    )
-            );
-            ReviewResult reviewResult = buildReviewEngine(repoRoot, event.projectId()).execute(
-                    event.sessionId(),
-                    SECURITY_AGENT,
-                    activeTask,
-                    contextPack
-            );
-
-            for (Finding finding : reviewResult.findings()) {
-                appendEvent(event.sessionId(), SessionEvent.Type.FINDING_REPORTED, Map.of(
-                        "taskId", activeTask.taskId(),
-                        "title", finding.title(),
-                        "severity", finding.severity().name(),
-                        "file", finding.location().filePath(),
-                        "line", finding.location().startLine()
-                ));
-                sseBroadcaster.publish(event.sessionId(), "finding_found", Map.of(
-                        "taskId", activeTask.taskId(),
-                        "title", finding.title(),
-                        "severity", finding.severity().name(),
-                        "file", finding.location().filePath(),
-                        "line", finding.location().startLine()
-                ));
-            }
-
-            appendEvent(event.sessionId(), SessionEvent.Type.TASK_COMPLETED, Map.of(
-                    "taskId", activeTask.taskId(),
-                    "findingCount", reviewResult.findings().size()
-            ));
-            sseBroadcaster.publish(event.sessionId(), "task_completed", Map.of(
-                    "taskId", activeTask.taskId(),
-                    "findingCount", reviewResult.findings().size()
-            ));
+                    ),
+                    new GatewayListener(event.sessionId())
+            ).reviewResult();
 
             session = session.startMerging(Instant.now());
             reviewSessionRepository.save(session);
@@ -285,21 +228,7 @@ public class GitHubReviewWorker {
         sseBroadcaster.complete(event.sessionId());
     }
 
-    private ReviewTask buildTask(DiffSummary diffSummary) {
-        List<String> changedFiles = diffSummary.changedFiles().stream()
-                .map(DiffSummary.ChangedFile::path)
-                .toList();
-        return ReviewTask.pending(
-                "task-security",
-                ReviewTask.TaskType.SECURITY,
-                ReviewTask.Priority.HIGH,
-                changedFiles,
-                List.of("Inspect changed code for high-confidence security defects."),
-                List.of()
-        );
-    }
-
-    private ReviewEngine buildReviewEngine(Path repoRoot, String projectId) {
+    private ReviewOrchestrator buildReviewOrchestrator(Path repoRoot, String projectId) {
         JavaParserAstParser astParser = new JavaParserAstParser();
         ToolRegistry toolRegistry = new ToolRegistry(List.of(
                 new ReadFileTool(repoRoot),
@@ -312,32 +241,26 @@ public class GitHubReviewWorker {
                 new AstGetCallChainTool(repoRoot, objectMapper, astParser),
                 new MemorySearchTool(projectMemoryRepository, projectId)
         ));
-        return new ReviewEngine(
-                llmClient,
-                toolRegistry,
-                new ToolExecutor(toolRegistry),
-                new ToolCallParser(objectMapper),
-                tokenCounter,
-                reviewModel,
-                llmParams,
-                maxIterations
+        return new ReviewOrchestrator(
+                new PlanningAgent(diffAnalyzer),
+                contextCompiler,
+                new ReviewEngine(
+                        llmClient,
+                        toolRegistry,
+                        new ToolExecutor(toolRegistry),
+                        new ToolCallParser(objectMapper),
+                        tokenCounter,
+                        reviewModel,
+                        llmParams,
+                        maxIterations
+                ),
+                new ReviewerPool(),
+                new MergeAgent()
         );
     }
 
     private void appendEvent(String sessionId, SessionEvent.Type type, Map<String, Object> payload) {
         reviewSessionRepository.append(SessionEvent.of(sessionId, type, Instant.now(), payload));
-    }
-
-    private DiffSummary toDiffSummary(DiffAnalyzer.DiffAnalysis diffAnalysis) {
-        return DiffSummary.of(diffAnalysis.fileDeltas().stream()
-                .map(fileDelta -> new DiffSummary.ChangedFile(
-                        fileDelta.path(),
-                        fileDelta.changeType(),
-                        fileDelta.additions(),
-                        fileDelta.deletions(),
-                        List.of()
-                ))
-                .toList());
     }
 
     private Path materializeWorkspace(
@@ -378,6 +301,63 @@ public class GitHubReviewWorker {
                     });
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to clean workspace " + workspace, exception);
+        }
+    }
+
+    private final class GatewayListener implements ReviewOrchestrator.Listener {
+
+        private final String sessionId;
+
+        private GatewayListener(String sessionId) {
+            this.sessionId = sessionId;
+        }
+
+        @Override
+        public void onTaskStarted(com.codepilot.core.domain.plan.ReviewTask reviewTask, com.codepilot.core.domain.context.ContextPack contextPack) {
+            appendEvent(sessionId, SessionEvent.Type.TASK_STARTED, Map.of(
+                    "taskId", reviewTask.taskId(),
+                    "type", reviewTask.type().name(),
+                    "files", reviewTask.targetFiles()
+            ));
+            sseBroadcaster.publish(sessionId, "task_started", Map.of(
+                    "taskId", reviewTask.taskId(),
+                    "type", reviewTask.type().name(),
+                    "files", reviewTask.targetFiles()
+            ));
+        }
+
+        @Override
+        public void onFindingReported(com.codepilot.core.domain.plan.ReviewTask reviewTask, Finding finding) {
+            appendEvent(sessionId, SessionEvent.Type.FINDING_REPORTED, Map.of(
+                    "taskId", reviewTask.taskId(),
+                    "title", finding.title(),
+                    "severity", finding.severity().name(),
+                    "file", finding.location().filePath(),
+                    "line", finding.location().startLine()
+            ));
+            sseBroadcaster.publish(sessionId, "finding_found", Map.of(
+                    "taskId", reviewTask.taskId(),
+                    "title", finding.title(),
+                    "severity", finding.severity().name(),
+                    "file", finding.location().filePath(),
+                    "line", finding.location().startLine()
+            ));
+        }
+
+        @Override
+        public void onTaskCompleted(com.codepilot.core.domain.plan.ReviewTask reviewTask, ReviewResult reviewResult) {
+            appendEvent(sessionId, SessionEvent.Type.TASK_COMPLETED, Map.of(
+                    "taskId", reviewTask.taskId(),
+                    "type", reviewTask.type().name(),
+                    "findingCount", reviewResult.findings().size(),
+                    "partial", reviewResult.partial()
+            ));
+            sseBroadcaster.publish(sessionId, "task_completed", Map.of(
+                    "taskId", reviewTask.taskId(),
+                    "type", reviewTask.type().name(),
+                    "findingCount", reviewResult.findings().size(),
+                    "partial", reviewResult.partial()
+            ));
         }
     }
 }

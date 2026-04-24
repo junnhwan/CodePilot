@@ -59,7 +59,7 @@ public final class ReviewPromptTemplates {
                 - Only report issues you can justify from the diff or tool evidence.
                 - Findings must stay in REPORTED state; confirmation happens later in the pipeline.
                 - If there is no issue, DELIVER with an empty findings array.
-                - P3 only supports CALL_TOOL and DELIVER. Do not request extra context.
+                - This review loop currently supports CALL_TOOL and DELIVER only. Do not request extra context.
                 - Return valid JSON when you are not using native tool calling.
                 """.formatted(
                 agentDefinition.agentName(),

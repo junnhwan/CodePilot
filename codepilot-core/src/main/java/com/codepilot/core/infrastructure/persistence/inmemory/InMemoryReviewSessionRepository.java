@@ -19,7 +19,7 @@ public class InMemoryReviewSessionRepository implements ReviewSessionRepository 
     private final Map<String, List<SessionEvent>> events = new ConcurrentHashMap<>();
 
     @Override
-    public Optional<ReviewSession> findById(String sessionId) {
+    public synchronized Optional<ReviewSession> findById(String sessionId) {
         ReviewSession reviewSession = sessions.get(sessionId);
         if (reviewSession == null) {
             return Optional.empty();
@@ -28,14 +28,14 @@ public class InMemoryReviewSessionRepository implements ReviewSessionRepository 
     }
 
     @Override
-    public void save(ReviewSession reviewSession) {
+    public synchronized void save(ReviewSession reviewSession) {
         List<SessionEvent> mergedEvents = mergeEvents(reviewSession.sessionId(), reviewSession.events());
         events.put(reviewSession.sessionId(), mergedEvents);
         sessions.put(reviewSession.sessionId(), withEvents(reviewSession, mergedEvents));
     }
 
     @Override
-    public void append(SessionEvent sessionEvent) {
+    public synchronized void append(SessionEvent sessionEvent) {
         List<SessionEvent> mergedEvents = mergeEvents(sessionEvent.sessionId(), List.of(sessionEvent));
         events.put(sessionEvent.sessionId(), mergedEvents);
         ReviewSession current = sessions.get(sessionEvent.sessionId());
@@ -45,7 +45,7 @@ public class InMemoryReviewSessionRepository implements ReviewSessionRepository 
     }
 
     @Override
-    public List<SessionEvent> findEvents(String sessionId) {
+    public synchronized List<SessionEvent> findEvents(String sessionId) {
         return events.getOrDefault(sessionId, List.of()).stream()
                 .sorted(Comparator.comparing(SessionEvent::occurredAt))
                 .toList();

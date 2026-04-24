@@ -7,12 +7,13 @@ import com.codepilot.core.application.review.TokenCounter;
 import com.codepilot.core.domain.agent.AgentState;
 import com.codepilot.core.domain.llm.LlmClient;
 import com.codepilot.core.domain.llm.LlmChunk;
+import com.codepilot.core.domain.llm.LlmMessage;
 import com.codepilot.core.domain.llm.LlmRequest;
 import com.codepilot.core.domain.llm.LlmResponse;
 import com.codepilot.core.domain.llm.LlmUsage;
 import com.codepilot.core.domain.memory.ProjectMemory;
 import com.codepilot.core.domain.memory.ProjectMemoryRepository;
-import com.codepilot.core.domain.llm.ToolCallInResponse;
+import com.codepilot.core.domain.plan.ReviewTask;
 import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
 import com.codepilot.core.domain.session.SessionEvent;
@@ -28,9 +29,12 @@ import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -105,47 +109,14 @@ class GitHubReviewWorkerTest {
                         """
                 )));
 
+        TaskAwareLlmClient llmClient = new TaskAwareLlmClient();
         GitHubReviewWorker worker = new GitHubReviewWorker(
                 eventBuffer,
                 repository,
                 pullRequestClient,
                 commentWriter,
                 broadcaster,
-                new StubLlmClient(List.of(
-                        new LlmResponse(
-                                "",
-                                List.of(new ToolCallInResponse(
-                                        "call-1",
-                                        "read_file",
-                                        Map.of("file_path", "src/main/java/com/example/UserRepository.java")
-                                )),
-                                new LlmUsage(100, 12, 112),
-                                "tool_calls"
-                        ),
-                        new LlmResponse(
-                                """
-                                {
-                                  "decision": "DELIVER",
-                                  "findings": [
-                                    {
-                                      "file": "src/main/java/com/example/UserRepository.java",
-                                      "line": 4,
-                                      "severity": "HIGH",
-                                      "confidence": 0.97,
-                                      "category": "security",
-                                      "title": "Potential SQL injection risk",
-                                      "description": "User input is concatenated directly into SQL.",
-                                      "suggestion": "Use a parameterized query.",
-                                      "evidence": ["The query interpolates name."]
-                                    }
-                                  ]
-                                }
-                                """,
-                                List.of(),
-                                new LlmUsage(140, 80, 220),
-                                "stop"
-                        )
-                )),
+                llmClient,
                 projectMemoryRepository,
                 new DiffAnalyzer(),
                 new DefaultContextCompiler(
@@ -166,32 +137,92 @@ class GitHubReviewWorkerTest {
 
         ReviewSession stored = repository.findById("session-1").orElseThrow();
         assertThat(stored.state()).isEqualTo(AgentState.DONE);
+        assertThat(stored.reviewPlan()).isNotNull();
+        assertThat(stored.reviewPlan().taskGraph().allTasks()).hasSize(4);
         assertThat(stored.reviewResult()).isNotNull();
         assertThat(stored.reviewResult().findings()).hasSize(1);
+        assertThat(llmClient.seenTaskTypes())
+                .contains(
+                        ReviewTask.TaskType.SECURITY,
+                        ReviewTask.TaskType.PERF,
+                        ReviewTask.TaskType.STYLE,
+                        ReviewTask.TaskType.MAINTAIN
+                );
         assertThat(repository.findEvents("session-1"))
                 .extracting(SessionEvent::type)
                 .contains(SessionEvent.Type.TASK_STARTED, SessionEvent.Type.FINDING_REPORTED, SessionEvent.Type.TASK_COMPLETED);
+        assertThat(repository.findEvents("session-1").stream()
+                .filter(eventEntry -> eventEntry.type() == SessionEvent.Type.TASK_STARTED))
+                .hasSize(4);
+        assertThat(repository.findEvents("session-1").stream()
+                .filter(eventEntry -> eventEntry.type() == SessionEvent.Type.TASK_COMPLETED))
+                .hasSize(4);
         verify(commentWriter).writeReview(any(), any());
         verify(eventBuffer).remove("171-0");
     }
 
-    private static final class StubLlmClient implements LlmClient {
+    private static final class TaskAwareLlmClient implements LlmClient {
 
-        private final List<LlmResponse> responses;
-        private int cursor;
+        private static final Pattern TASK_TYPE_PATTERN = Pattern.compile("(?m)^- type: ([A-Z]+)$");
 
-        private StubLlmClient(List<LlmResponse> responses) {
-            this.responses = List.copyOf(responses);
-        }
+        private final List<ReviewTask.TaskType> seenTaskTypes = new ArrayList<>();
 
-        @Override
         public LlmResponse chat(LlmRequest request) {
-            return responses.get(cursor++);
+            ReviewTask.TaskType taskType = taskType(request.messages());
+            seenTaskTypes.add(taskType);
+            if (taskType == ReviewTask.TaskType.SECURITY) {
+                return new LlmResponse(
+                        """
+                        {
+                          "decision": "DELIVER",
+                          "findings": [
+                            {
+                              "file": "src/main/java/com/example/UserRepository.java",
+                              "line": 4,
+                              "severity": "HIGH",
+                              "confidence": 0.97,
+                              "category": "security",
+                              "title": "Potential SQL injection risk",
+                              "description": "User input is concatenated directly into SQL.",
+                              "suggestion": "Use a parameterized query.",
+                              "evidence": ["The query interpolates name."]
+                            }
+                          ]
+                        }
+                        """,
+                        List.of(),
+                        new LlmUsage(140, 80, 220),
+                        "stop"
+                );
+            }
+            return new LlmResponse("""
+                    {
+                      "decision": "DELIVER",
+                      "findings": []
+                    }
+                    """, List.of(), new LlmUsage(90, 20, 110), "stop");
         }
 
         @Override
         public Flux<LlmChunk> stream(LlmRequest request) {
             throw new UnsupportedOperationException("stream is not used in this test");
+        }
+
+        private ReviewTask.TaskType taskType(List<LlmMessage> messages) {
+            String systemPrompt = messages.stream()
+                    .filter(message -> "system".equals(message.role()))
+                    .map(LlmMessage::content)
+                    .findFirst()
+                    .orElseThrow();
+            Matcher matcher = TASK_TYPE_PATTERN.matcher(systemPrompt);
+            if (!matcher.find()) {
+                throw new IllegalStateException("Unable to locate task type in system prompt");
+            }
+            return ReviewTask.TaskType.valueOf(matcher.group(1));
+        }
+
+        private List<ReviewTask.TaskType> seenTaskTypes() {
+            return List.copyOf(seenTaskTypes);
         }
     }
 }

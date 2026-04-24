@@ -221,14 +221,14 @@ class ReviewEngineTest {
                                 "Changed hunk"
                         )),
                         ProjectMemory.empty("project-alpha"),
-                        new ContextPack.TokenBudget(530, 40, 120)
+                        new ContextPack.TokenBudget(700, 60, 120)
                 )
         );
 
         assertThat(reviewResult.partial()).isFalse();
         assertThat(llmClient.capturedRequests()).hasSize(3);
         LlmRequest compactedRequest = llmClient.capturedRequests().get(2);
-        assertThat(tokenCounter.countMessages(compactedRequest.messages())).isLessThanOrEqualTo(490);
+        assertThat(tokenCounter.countMessages(compactedRequest.messages())).isLessThanOrEqualTo(640);
         assertThat(compactedRequest.messages().stream()
                 .filter(message -> "tool".equals(message.role()))
                 .map(LlmMessage::content))
@@ -236,7 +236,7 @@ class ReviewEngineTest {
         assertThat(compactedRequest.messages().stream()
                 .filter(message -> "tool".equals(message.role()))
                 .map(LlmMessage::content))
-                .noneMatch(content -> content.contains("call-1"));
+                .anyMatch(content -> content.contains("call-1") && content.contains("summary=compacted tool result"));
     }
 
     @Test
