@@ -15,11 +15,18 @@ import com.codepilot.core.domain.context.ContextCompiler;
 import com.codepilot.core.domain.context.ContextPack;
 import com.codepilot.core.domain.llm.LlmClient;
 import com.codepilot.core.domain.memory.ProjectMemory;
+import com.codepilot.core.domain.memory.ProjectMemoryRepository;
 import com.codepilot.core.domain.plan.ReviewTask;
 import com.codepilot.core.domain.review.ReviewResult;
 import com.codepilot.core.infrastructure.context.ClasspathCompilationStrategyLoader;
 import com.codepilot.core.infrastructure.context.JavaParserAstParser;
+import com.codepilot.core.infrastructure.tool.AstFindReferencesTool;
+import com.codepilot.core.infrastructure.tool.AstGetCallChainTool;
 import com.codepilot.core.infrastructure.tool.AstParseTool;
+import com.codepilot.core.infrastructure.tool.GitBlameTool;
+import com.codepilot.core.infrastructure.tool.GitDiffContextTool;
+import com.codepilot.core.infrastructure.tool.GitLogTool;
+import com.codepilot.core.infrastructure.tool.MemorySearchTool;
 import com.codepilot.core.infrastructure.tool.ReadFileTool;
 import com.codepilot.core.infrastructure.tool.SearchPatternTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,6 +38,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 public final class LocalReviewRunner {
@@ -79,10 +87,28 @@ public final class LocalReviewRunner {
                 Map.of("language", "java", "entrypoint", "cli")
         );
 
+        ProjectMemoryRepository projectMemoryRepository = new ProjectMemoryRepository() {
+            @Override
+            public Optional<ProjectMemory> findByProjectId(String projectId) {
+                return Optional.empty();
+            }
+
+            @Override
+            public void save(ProjectMemory projectMemory) {
+                throw new UnsupportedOperationException("LocalReviewRunner does not persist project memory");
+            }
+        };
+
         ToolRegistry toolRegistry = new ToolRegistry(List.of(
                 new ReadFileTool(normalizedRepoRoot),
                 new SearchPatternTool(normalizedRepoRoot),
-                new AstParseTool(normalizedRepoRoot, objectMapper)
+                new AstParseTool(normalizedRepoRoot, objectMapper),
+                new GitBlameTool(normalizedRepoRoot),
+                new GitLogTool(normalizedRepoRoot),
+                new GitDiffContextTool(normalizedRepoRoot),
+                new AstFindReferencesTool(normalizedRepoRoot, objectMapper, new JavaParserAstParser()),
+                new AstGetCallChainTool(normalizedRepoRoot, objectMapper, new JavaParserAstParser()),
+                new MemorySearchTool(projectMemoryRepository, "cli-project")
         ));
 
         ReviewEngine reviewEngine = new ReviewEngine(

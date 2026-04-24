@@ -196,7 +196,19 @@
 - 优先级
   - `P1`
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 升级 `ToolExecutor`：按 `readOnly/exclusive` 分区执行，只读 Tool 并行、互斥 Tool 串行；同签名调用复用缓存结果；单次 Tool 调用支持超时失败回写
+  - 新增 Git Tool：`GitBlameTool`、`GitLogTool`、`GitDiffContextTool`，基于 JGit 读取 blame、文件历史和带上下文 diff
+  - 新增 AST Tool：`AstFindReferencesTool`、`AstGetCallChainTool`，复用现有 `AstParser` 和轻量仓库 AST 索引完成类型/方法引用与调用链查询
+  - 新增 `MemorySearchTool`，最小复用 `ProjectMemoryRepository` 按关键词读取 `ReviewPattern` / `TeamConvention`，未提前引入完整 `MemoryService`
+  - `codepilot-cli` 与 `codepilot-gateway` 已接入新的 Tool 注册列表，保持现有 `ReviewEngine` / `ToolRegistry` 主链不变
+  - 新增 P6 定向测试，覆盖并发分区、缓存、超时、Git Tool、AST Tool、`memory_search`，并更新 Gateway/CLI 受影响链路测试
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=ToolExecutorTest,GitRepositoryToolsTest,AstNavigationToolsTest,MemorySearchToolTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P6 core 定向测试 9 项全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-cli,codepilot-gateway -am "-Dtest=LocalReviewRunnerTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，受影响 CLI / Gateway 链路测试全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 36 个测试全部通过
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示工作区 LF/CRLF 转换警告，无格式错误）
 
 ### P7 Context Governance + Loop Detection
 

@@ -13,6 +13,7 @@ import com.codepilot.core.domain.context.ContextCompiler;
 import com.codepilot.core.domain.context.ContextPack;
 import com.codepilot.core.domain.context.DiffSummary;
 import com.codepilot.core.domain.llm.LlmClient;
+import com.codepilot.core.domain.memory.ProjectMemoryRepository;
 import com.codepilot.core.domain.plan.ReviewPlan;
 import com.codepilot.core.domain.plan.ReviewTask;
 import com.codepilot.core.domain.plan.TaskGraph;
@@ -21,7 +22,14 @@ import com.codepilot.core.domain.review.ReviewResult;
 import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
 import com.codepilot.core.domain.session.SessionEvent;
+import com.codepilot.core.infrastructure.context.JavaParserAstParser;
+import com.codepilot.core.infrastructure.tool.AstFindReferencesTool;
+import com.codepilot.core.infrastructure.tool.AstGetCallChainTool;
 import com.codepilot.core.infrastructure.tool.AstParseTool;
+import com.codepilot.core.infrastructure.tool.GitBlameTool;
+import com.codepilot.core.infrastructure.tool.GitDiffContextTool;
+import com.codepilot.core.infrastructure.tool.GitLogTool;
+import com.codepilot.core.infrastructure.tool.MemorySearchTool;
 import com.codepilot.core.infrastructure.tool.ReadFileTool;
 import com.codepilot.core.infrastructure.tool.SearchPatternTool;
 import com.codepilot.gateway.github.GitHubCommentWriter;
@@ -63,6 +71,8 @@ public class GitHubReviewWorker {
 
     private final LlmClient llmClient;
 
+    private final ProjectMemoryRepository projectMemoryRepository;
+
     private final DiffAnalyzer diffAnalyzer;
 
     private final ContextCompiler contextCompiler;
@@ -84,6 +94,7 @@ public class GitHubReviewWorker {
             GitHubCommentWriter commentWriter,
             ReviewSseBroadcaster sseBroadcaster,
             LlmClient llmClient,
+            ProjectMemoryRepository projectMemoryRepository,
             DiffAnalyzer diffAnalyzer,
             ContextCompiler contextCompiler,
             ObjectMapper objectMapper,
@@ -96,6 +107,7 @@ public class GitHubReviewWorker {
                 commentWriter,
                 sseBroadcaster,
                 llmClient,
+                projectMemoryRepository,
                 diffAnalyzer,
                 contextCompiler,
                 objectMapper,
@@ -113,6 +125,7 @@ public class GitHubReviewWorker {
             GitHubCommentWriter commentWriter,
             ReviewSseBroadcaster sseBroadcaster,
             LlmClient llmClient,
+            ProjectMemoryRepository projectMemoryRepository,
             DiffAnalyzer diffAnalyzer,
             ContextCompiler contextCompiler,
             ObjectMapper objectMapper,
@@ -127,6 +140,7 @@ public class GitHubReviewWorker {
         this.commentWriter = commentWriter;
         this.sseBroadcaster = sseBroadcaster;
         this.llmClient = llmClient;
+        this.projectMemoryRepository = projectMemoryRepository;
         this.diffAnalyzer = diffAnalyzer;
         this.contextCompiler = contextCompiler;
         this.objectMapper = objectMapper;
@@ -206,7 +220,7 @@ public class GitHubReviewWorker {
                             "headSha", event.headSha()
                     )
             );
-            ReviewResult reviewResult = buildReviewEngine(repoRoot).execute(
+            ReviewResult reviewResult = buildReviewEngine(repoRoot, event.projectId()).execute(
                     event.sessionId(),
                     SECURITY_AGENT,
                     activeTask,
@@ -285,11 +299,18 @@ public class GitHubReviewWorker {
         );
     }
 
-    private ReviewEngine buildReviewEngine(Path repoRoot) {
+    private ReviewEngine buildReviewEngine(Path repoRoot, String projectId) {
+        JavaParserAstParser astParser = new JavaParserAstParser();
         ToolRegistry toolRegistry = new ToolRegistry(List.of(
                 new ReadFileTool(repoRoot),
                 new SearchPatternTool(repoRoot),
-                new AstParseTool(repoRoot, objectMapper)
+                new AstParseTool(repoRoot, objectMapper),
+                new GitBlameTool(repoRoot),
+                new GitLogTool(repoRoot),
+                new GitDiffContextTool(repoRoot),
+                new AstFindReferencesTool(repoRoot, objectMapper, astParser),
+                new AstGetCallChainTool(repoRoot, objectMapper, astParser),
+                new MemorySearchTool(projectMemoryRepository, projectId)
         ));
         return new ReviewEngine(
                 llmClient,

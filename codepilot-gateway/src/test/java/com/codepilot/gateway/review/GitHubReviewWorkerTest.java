@@ -10,6 +10,8 @@ import com.codepilot.core.domain.llm.LlmChunk;
 import com.codepilot.core.domain.llm.LlmRequest;
 import com.codepilot.core.domain.llm.LlmResponse;
 import com.codepilot.core.domain.llm.LlmUsage;
+import com.codepilot.core.domain.memory.ProjectMemory;
+import com.codepilot.core.domain.memory.ProjectMemoryRepository;
 import com.codepilot.core.domain.llm.ToolCallInResponse;
 import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
@@ -28,6 +30,7 @@ import reactor.core.publisher.Flux;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -45,6 +48,17 @@ class GitHubReviewWorkerTest {
         RedisStreamReviewEventBuffer eventBuffer = mock(RedisStreamReviewEventBuffer.class);
         GitHubPullRequestClient pullRequestClient = mock(GitHubPullRequestClient.class);
         GitHubCommentWriter commentWriter = mock(GitHubCommentWriter.class);
+        ProjectMemoryRepository projectMemoryRepository = new ProjectMemoryRepository() {
+            @Override
+            public Optional<ProjectMemory> findByProjectId(String projectId) {
+                return Optional.empty();
+            }
+
+            @Override
+            public void save(ProjectMemory projectMemory) {
+                throw new UnsupportedOperationException("save is not used in this test");
+            }
+        };
 
         GitHubPullRequestEvent event = new GitHubPullRequestEvent(
                 "session-1",
@@ -132,6 +146,7 @@ class GitHubReviewWorkerTest {
                                 "stop"
                         )
                 )),
+                projectMemoryRepository,
                 new DiffAnalyzer(),
                 new DefaultContextCompiler(
                         new DiffAnalyzer(),
