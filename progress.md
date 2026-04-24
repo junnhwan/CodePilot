@@ -290,19 +290,29 @@
 ### P10 Eval Center
 
 - 目标
-  - 实现 Eval Center + 47 个评测场景 + Scorecard。
+  - 在 `codepilot-eval` 中建立最小可运行评测主链：`EvalScenario` 加载 → `EvalRunner` 调用现有 review pipeline → `Scorecard` 输出。
+  - 评测对象对齐当前已实现主链：Planning → Context Compiler → Multi-Agent Review → Merge；Memory 只接入 P9 已有的最小 recall / injection。
+  - 不提前实现 baseline 对比、可视化、Dream 沉淀或 Global Knowledge / PgVector 完整能力。
 - 计划产出
+  - `EvalScenario` / `EvalScenarioLoader`
   - `EvalRunner` — 端到端评测运行器
-  - `EvalScenario` 加载和解析
   - `Scorecard` 生成
-  - 47 个评测场景 JSON
-  - 3-5 个 fixture repo
-  - Baseline 对比实验框架
-  - 评测报告生成（scorecard.json + review-eval-report.md）
+  - 资源化最小场景 pack（若干高信号真实场景）
+  - P10 定向测试与端到端验证
 - 优先级
   - `P1`
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-eval` 新增 `EvalScenario`、`EvalScenarioLoader`、`EvalRunner`、`Scorecard`，落地最小可运行 Eval Center 闭环：场景加载、临时 fixture repo 物化、复用现有 `ReviewOrchestrator` 主链跑评测、汇总 scorecard
+  - `EvalRunner` 直接复用现有 `PlanningAgent`、`DefaultContextCompiler`、`ReviewEngine`、`ReviewerPool`、`MergeAgent`，不额外发明平台化抽象；当前评测工具集刻意收敛到文件 / AST / Memory 工具，避免在没有真实 Git 历史的 fixture 上伪造 git 能力
+  - 新增 `codepilot-eval/src/main/resources/eval/scenarios/minimal-scenario-pack.json`，提供 4 个高信号真实场景：SQL 注入、循环内仓储调用、依赖 P9 Project Memory 注入的 token guard 模式，以及一个无问题安全重构场景
+  - 新增 `EvalScenarioLoaderTest`、`EvalRunnerTest`、`ScorecardTest`，覆盖场景 pack 加载、scorecard 统计，以及 `Planning → Context Compiler → Multi-Agent Review → Merge` 的端到端评测主链
+  - 为了让全仓验证稳定，通过最小改动把 `codepilot-cli` 的 `LocalReviewRunnerTest` 采样容器改为线程安全实现，修复并发 reviewer 下偶发丢 task type 记录的测试抖动，不影响产品逻辑
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-eval -am "-Dtest=EvalScenarioLoaderTest,ScorecardTest,EvalRunnerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P10 定向测试全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 50 个测试全部通过
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示工作区 LF/CRLF 转换警告，无格式错误）
 
 ### P11 Session 事件溯源 + 中断恢复
 

@@ -14,9 +14,9 @@ import reactor.core.publisher.Flux;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -75,7 +75,7 @@ class LocalReviewRunnerTest {
 
         private static final Pattern TASK_TYPE_PATTERN = Pattern.compile("(?m)^- type: ([A-Z]+)$");
 
-        private final List<ReviewTask.TaskType> seenTaskTypes = new ArrayList<>();
+        private final List<ReviewTask.TaskType> seenTaskTypes = new CopyOnWriteArrayList<>();
 
         @Override
         public LlmResponse chat(LlmRequest request) {

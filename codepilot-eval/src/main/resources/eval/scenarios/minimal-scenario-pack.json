@@ -1,0 +1,225 @@
+{
+  "scenarios": [
+    {
+      "scenarioId": "eval-sql-injection-001",
+      "name": "SQL injection in repository query",
+      "description": "Detect string-built SQL introduced in a repository method.",
+      "projectId": "eval-sql-project",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/user/UserRepository.java",
+          "lines": [
+            "package com.example.user;",
+            "",
+            "class UserRepository {",
+            "    String findByName(String name) {",
+            "        return jdbcTemplate.queryForObject(",
+            "                \"select * from users where name = '\" + name + \"'\",",
+            "                String.class);",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/user/UserRepository.java b/src/main/java/com/example/user/UserRepository.java",
+        "index 1111111..2222222 100644",
+        "--- a/src/main/java/com/example/user/UserRepository.java",
+        "+++ b/src/main/java/com/example/user/UserRepository.java",
+        "@@ -1,3 +1,9 @@",
+        " package com.example.user;",
+        " ",
+        " class UserRepository {",
+        "+    String findByName(String name) {",
+        "+        return jdbcTemplate.queryForObject(",
+        "+                \"select * from users where name = '\" + name + \"'\",",
+        "+                String.class);",
+        "+    }",
+        " }"
+      ],
+      "groundTruth": [
+        {
+          "filePath": "src/main/java/com/example/user/UserRepository.java",
+          "startLine": 6,
+          "endLine": 6,
+          "severity": "HIGH",
+          "category": "security",
+          "title": "SQL injection risk"
+        }
+      ],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    },
+    {
+      "scenarioId": "eval-repository-loop-001",
+      "name": "Repository lookup inside loop",
+      "description": "Detect repeated repository calls introduced inside a loop.",
+      "projectId": "eval-perf-project",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/order/OrderService.java",
+          "lines": [
+            "package com.example.order;",
+            "",
+            "import java.util.ArrayList;",
+            "import java.util.List;",
+            "",
+            "class OrderService {",
+            "    List<Order> loadOrders(List<String> orderIds) {",
+            "        List<Order> orders = new ArrayList<>();",
+            "        for (String orderId : orderIds) {",
+            "            orders.add(orderRepository.findById(orderId));",
+            "        }",
+            "        return orders;",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/order/OrderService.java b/src/main/java/com/example/order/OrderService.java",
+        "index 3333333..4444444 100644",
+        "--- a/src/main/java/com/example/order/OrderService.java",
+        "+++ b/src/main/java/com/example/order/OrderService.java",
+        "@@ -1,3 +1,14 @@",
+        " package com.example.order;",
+        "+",
+        "+import java.util.ArrayList;",
+        "+import java.util.List;",
+        "+",
+        "+class OrderService {",
+        "+    List<Order> loadOrders(List<String> orderIds) {",
+        "+        List<Order> orders = new ArrayList<>();",
+        "+        for (String orderId : orderIds) {",
+        "+            orders.add(orderRepository.findById(orderId));",
+        "+        }",
+        "+        return orders;",
+        "+    }",
+        "+}"
+      ],
+      "groundTruth": [
+        {
+          "filePath": "src/main/java/com/example/order/OrderService.java",
+          "startLine": 10,
+          "endLine": 10,
+          "severity": "MEDIUM",
+          "category": "perf",
+          "title": "Repository call inside loop"
+        }
+      ],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    },
+    {
+      "scenarioId": "eval-project-token-guard-001",
+      "name": "Project token lookup should use memory-backed guard pattern",
+      "description": "Use current P9 project memory injection to surface a known token guard pattern.",
+      "projectId": "eval-memory-guard",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/token/ProjectTokenService.java",
+          "lines": [
+            "package com.example.token;",
+            "",
+            "class ProjectTokenService {",
+            "    AccessToken loadToken(String projectToken) {",
+            "        return tokenRepository.findByProjectToken(projectToken);",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/token/ProjectTokenService.java b/src/main/java/com/example/token/ProjectTokenService.java",
+        "index 5555555..6666666 100644",
+        "--- a/src/main/java/com/example/token/ProjectTokenService.java",
+        "+++ b/src/main/java/com/example/token/ProjectTokenService.java",
+        "@@ -1,3 +1,7 @@",
+        " package com.example.token;",
+        " ",
+        "+class ProjectTokenService {",
+        "+    AccessToken loadToken(String projectToken) {",
+        "+        return tokenRepository.findByProjectToken(projectToken);",
+        "+    }",
+        "+}"
+      ],
+      "projectMemory": {
+        "projectId": "eval-memory-guard",
+        "reviewPatterns": [
+          {
+            "patternId": "pattern-token-guard",
+            "projectId": "eval-memory-guard",
+            "patternType": "SECURITY_PATTERN",
+            "title": "Project token lookups must call TokenGuard before repository access",
+            "description": "When a project token enters ProjectTokenService, require TokenGuard validation before reading from tokenRepository.",
+            "codeExample": "tokenGuard.requireProjectAccess(projectToken);",
+            "frequency": 3,
+            "lastSeenAt": "2026-04-24T00:00:00Z"
+          }
+        ],
+        "teamConventions": []
+      },
+      "groundTruth": [
+        {
+          "filePath": "src/main/java/com/example/token/ProjectTokenService.java",
+          "startLine": 5,
+          "endLine": 5,
+          "severity": "HIGH",
+          "category": "security",
+          "title": "Missing token guard before repository access"
+        }
+      ],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    },
+    {
+      "scenarioId": "eval-safe-refactor-001",
+      "name": "Harmless formatter refactor",
+      "description": "Verify the eval runner can represent a no-finding scenario without false positives.",
+      "projectId": "eval-safe-project",
+      "repositoryFiles": [
+        {
+          "path": "src/main/java/com/example/profile/ProfileFormatter.java",
+          "lines": [
+            "package com.example.profile;",
+            "",
+            "class ProfileFormatter {",
+            "    String format(String userName) {",
+            "        String normalizedUserName = userName == null ? \"\" : userName.trim();",
+            "        return normalizedUserName.toUpperCase();",
+            "    }",
+            "}"
+          ]
+        }
+      ],
+      "diffLines": [
+        "diff --git a/src/main/java/com/example/profile/ProfileFormatter.java b/src/main/java/com/example/profile/ProfileFormatter.java",
+        "index 7777777..8888888 100644",
+        "--- a/src/main/java/com/example/profile/ProfileFormatter.java",
+        "+++ b/src/main/java/com/example/profile/ProfileFormatter.java",
+        "@@ -2,5 +2,5 @@",
+        " ",
+        " class ProfileFormatter {",
+        "-    String format(String name) {",
+        "-        String normalized = name == null ? \"\" : name.trim();",
+        "-        return normalized.toUpperCase();",
+        "+    String format(String userName) {",
+        "+        String normalizedUserName = userName == null ? \"\" : userName.trim();",
+        "+        return normalizedUserName.toUpperCase();",
+        "     }",
+        " }"
+      ],
+      "groundTruth": [],
+      "stopPolicy": {
+        "maxIterations": 6,
+        "maxTimeMinutes": 5
+      }
+    }
+  ]
+}
