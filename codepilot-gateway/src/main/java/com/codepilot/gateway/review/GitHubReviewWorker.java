@@ -180,10 +180,12 @@ public class GitHubReviewWorker {
         ProjectMemory projectMemory = projectMemoryRepository.findByProjectId(event.projectId())
                 .orElseGet(() -> ProjectMemory.empty(event.projectId()));
         String rawDiff = "";
+        boolean hasRemainingTasks = hasRemainingTasks(session.reviewPlan());
 
         if (session.state() == AgentState.IDLE
                 || session.state() == AgentState.PLANNING
-                || session.state() == AgentState.REVIEWING) {
+                || (session.state() == AgentState.REVIEWING
+                && (session.reviewPlan() == null || hasRemainingTasks))) {
             rawDiff = pullRequestClient.fetchPullRequestDiff(event.owner(), event.repository(), event.prNumber());
         }
 
@@ -217,29 +219,33 @@ public class GitHubReviewWorker {
                         .formatted(event.sessionId()));
             }
 
-            Path repoRoot = materializeWorkspace(event, pullRequestClient.fetchPullRequestFiles(
-                    event.owner(),
-                    event.repository(),
-                    event.prNumber(),
-                    event.headSha()
-            ));
-            try {
-                reviewResult = buildReviewOrchestrator(repoRoot, event.projectId()).execute(
-                        effectivePlan,
-                        repoRoot,
-                        rawDiff,
-                        projectMemory,
-                        Map.of(
-                                "language", "java",
-                                "entrypoint", "github-webhook",
-                                "repository", event.projectId(),
-                                "headSha", event.headSha()
-                        ),
-                        restored.completedTaskResults(),
-                        new GatewayListener(event.sessionId())
-                ).reviewResult();
-            } finally {
-                deleteWorkspace(repoRoot);
+            if (hasRemainingTasks(effectivePlan)) {
+                Path repoRoot = materializeWorkspace(event, pullRequestClient.fetchPullRequestFiles(
+                        event.owner(),
+                        event.repository(),
+                        event.prNumber(),
+                        event.headSha()
+                ));
+                try {
+                    reviewResult = buildReviewOrchestrator(repoRoot, event.projectId()).execute(
+                            effectivePlan,
+                            repoRoot,
+                            rawDiff,
+                            projectMemory,
+                            Map.of(
+                                    "language", "java",
+                                    "entrypoint", "github-webhook",
+                                    "repository", event.projectId(),
+                                    "headSha", event.headSha()
+                            ),
+                            restored.completedTaskResults(),
+                            new GatewayListener(event.sessionId())
+                    ).reviewResult();
+                } finally {
+                    deleteWorkspace(repoRoot);
+                }
+            } else {
+                reviewResult = new MergeAgent().merge(event.sessionId(), restored.completedTaskResults());
             }
             session = session.startMerging(Instant.now());
             reviewSessionRepository.save(session);
@@ -270,6 +276,10 @@ public class GitHubReviewWorker {
             sseBroadcaster.complete(event.sessionId());
             dreamSafely(event.projectId(), reviewResult);
         }
+    }
+
+    private boolean hasRemainingTasks(ReviewPlan reviewPlan) {
+        return reviewPlan != null && reviewPlan.taskGraph().allTasks().stream().anyMatch(task -> !task.isTerminal());
     }
 
     private void fail(GitHubPullRequestEvent event, Exception exception) {

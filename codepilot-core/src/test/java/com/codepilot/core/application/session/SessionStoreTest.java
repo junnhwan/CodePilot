@@ -3,8 +3,10 @@ package com.codepilot.core.application.session;
 import com.codepilot.core.application.plan.PlanningAgent;
 import com.codepilot.core.application.context.DiffAnalyzer;
 import com.codepilot.core.domain.agent.AgentState;
+import com.codepilot.core.domain.context.DiffSummary;
 import com.codepilot.core.domain.plan.ReviewPlan;
 import com.codepilot.core.domain.plan.ReviewTask;
+import com.codepilot.core.domain.plan.TaskGraph;
 import com.codepilot.core.domain.review.Finding;
 import com.codepilot.core.domain.review.ReviewResult;
 import com.codepilot.core.domain.review.Severity;
@@ -131,6 +133,82 @@ class SessionStoreTest {
         assertThat(restored.completedTaskResults()).isEmpty();
     }
 
+    @Test
+    void restoresReviewingSessionFromEventsWhenCheckpointIsMissing() {
+        InMemoryReviewSessionRepository repository = new InMemoryReviewSessionRepository();
+        SessionStore sessionStore = new SessionStore(repository);
+
+        ReviewPlan reviewPlan = singleTaskPlan("session-reviewing-events");
+        ReviewTask securityTask = reviewPlan.taskGraph().allTasks().getFirst();
+
+        ReviewSession reviewing = ReviewSession.initialize(
+                        "session-reviewing-events",
+                        "acme/repo",
+                        11,
+                        "https://github.com/acme/repo/pull/11",
+                        Instant.parse("2026-04-24T03:00:00Z")
+                )
+                .startPlanning(reviewPlan.diffSummary(), Instant.parse("2026-04-24T03:01:00Z"))
+                .attachPlan(reviewPlan, Instant.parse("2026-04-24T03:02:00Z"))
+                .startReviewing(Instant.parse("2026-04-24T03:03:00Z"));
+        reviewing.events().forEach(repository::append);
+        appendCompletedSecurityTaskEvents(
+                repository,
+                "session-reviewing-events",
+                securityTask,
+                Instant.parse("2026-04-24T03:04:00Z")
+        );
+
+        SessionStore.RestoredSession restored = sessionStore.restore("session-reviewing-events").orElseThrow();
+
+        assertThat(restored.session().state()).isEqualTo(AgentState.REVIEWING);
+        assertThat(restored.session().reviewPlan()).isNotNull();
+        ReviewTask restoredSecurityTask = restored.session().reviewPlan().taskGraph().allTasks().getFirst();
+        assertThat(restoredSecurityTask.state()).isEqualTo(ReviewTask.State.COMPLETED);
+        assertThat(restored.completedTaskResults()).hasSize(1);
+    }
+
+    @Test
+    void restoresReportingSessionFromEventsWhenCheckpointIsMissing() {
+        InMemoryReviewSessionRepository repository = new InMemoryReviewSessionRepository();
+        SessionStore sessionStore = new SessionStore(repository);
+
+        ReviewPlan reviewPlan = singleTaskPlan("session-reporting-events");
+        ReviewTask securityTask = reviewPlan.taskGraph().allTasks().getFirst();
+        ReviewResult mergedResult = mergedReviewResult("session-reporting-events", securityTask.taskId());
+
+        ReviewSession reporting = ReviewSession.initialize(
+                        "session-reporting-events",
+                        "acme/repo",
+                        12,
+                        "https://github.com/acme/repo/pull/12",
+                        Instant.parse("2026-04-24T04:00:00Z")
+                )
+                .startPlanning(reviewPlan.diffSummary(), Instant.parse("2026-04-24T04:01:00Z"))
+                .attachPlan(reviewPlan, Instant.parse("2026-04-24T04:02:00Z"))
+                .startReviewing(Instant.parse("2026-04-24T04:03:00Z"))
+                .startMerging(Instant.parse("2026-04-24T04:05:00Z"))
+                .startReporting(mergedResult, Instant.parse("2026-04-24T04:06:00Z"));
+        reporting.events().forEach(repository::append);
+        appendCompletedSecurityTaskEvents(
+                repository,
+                "session-reporting-events",
+                securityTask,
+                Instant.parse("2026-04-24T04:04:00Z")
+        );
+
+        SessionStore.RestoredSession restored = sessionStore.restore("session-reporting-events").orElseThrow();
+
+        assertThat(restored.session().state()).isEqualTo(AgentState.REPORTING);
+        assertThat(restored.session().reviewPlan()).isNotNull();
+        assertThat(restored.session().reviewPlan().taskGraph().allTasks()).allMatch(ReviewTask::isTerminal);
+        assertThat(restored.session().reviewResult()).isNotNull();
+        assertThat(restored.session().reviewResult().generatedAt()).isEqualTo(mergedResult.generatedAt());
+        assertThat(restored.session().reviewResult().findings())
+                .extracting(Finding::title)
+                .containsExactly("Potential SQL injection risk");
+    }
+
     private String rawDiff() {
         return """
                 diff --git a/src/main/java/com/example/UserRepository.java b/src/main/java/com/example/UserRepository.java
@@ -146,5 +224,102 @@ class SessionStoreTest {
                 +  }
                 +}
                 """;
+    }
+
+    private ReviewPlan singleTaskPlan(String sessionId) {
+        ReviewTask securityTask = ReviewTask.pending(
+                sessionId + "-security",
+                ReviewTask.TaskType.SECURITY,
+                ReviewTask.Priority.HIGH,
+                List.of("src/main/java/com/example/UserRepository.java"),
+                List.of("check SQL safety"),
+                List.of()
+        );
+        DiffSummary diffSummary = DiffSummary.of(List.of(new DiffSummary.ChangedFile(
+                "src/main/java/com/example/UserRepository.java",
+                DiffSummary.ChangeType.MODIFIED,
+                6,
+                1,
+                List.of("UserRepository#findByName")
+        )));
+        return new ReviewPlan(
+                "plan-" + sessionId,
+                sessionId,
+                diffSummary,
+                TaskGraph.of(List.of(securityTask)),
+                ReviewPlan.ReviewStrategy.SECURITY_FIRST
+        );
+    }
+
+    private ReviewResult mergedReviewResult(String sessionId, String taskId) {
+        return new ReviewResult(
+                sessionId,
+                List.of(restoredFinding(taskId)),
+                false,
+                Instant.parse("2026-04-24T04:05:30Z")
+        );
+    }
+
+    private void appendCompletedSecurityTaskEvents(
+            InMemoryReviewSessionRepository repository,
+            String sessionId,
+            ReviewTask securityTask,
+            Instant startedAt
+    ) {
+        repository.append(SessionEvent.of(
+                sessionId,
+                SessionEvent.Type.TASK_STARTED,
+                startedAt,
+                Map.of(
+                        "taskId", securityTask.taskId(),
+                        "type", securityTask.type().name(),
+                        "files", securityTask.targetFiles()
+                )
+        ));
+        repository.append(SessionEvent.of(
+                sessionId,
+                SessionEvent.Type.FINDING_REPORTED,
+                startedAt.plusSeconds(10),
+                Map.ofEntries(
+                        Map.entry("findingId", "finding-" + securityTask.taskId()),
+                        Map.entry("taskId", securityTask.taskId()),
+                        Map.entry("category", "security"),
+                        Map.entry("severity", Severity.HIGH.name()),
+                        Map.entry("confidence", 0.98d),
+                        Map.entry("file", "src/main/java/com/example/UserRepository.java"),
+                        Map.entry("startLine", 5),
+                        Map.entry("endLine", 5),
+                        Map.entry("title", "Potential SQL injection risk"),
+                        Map.entry("description", "User input is concatenated directly into SQL."),
+                        Map.entry("suggestion", "Use a parameterized query."),
+                        Map.entry("evidence", List.of("The query interpolates request data into SQL."))
+                )
+        ));
+        repository.append(SessionEvent.of(
+                sessionId,
+                SessionEvent.Type.TASK_COMPLETED,
+                startedAt.plusSeconds(20),
+                Map.of(
+                        "taskId", securityTask.taskId(),
+                        "type", securityTask.type().name(),
+                        "findingCount", 1,
+                        "partial", false
+                )
+        ));
+    }
+
+    private Finding restoredFinding(String taskId) {
+        return Finding.reported(
+                "finding-" + taskId,
+                taskId,
+                "security",
+                Severity.HIGH,
+                0.98d,
+                new Finding.CodeLocation("src/main/java/com/example/UserRepository.java", 5, 5),
+                "Potential SQL injection risk",
+                "User input is concatenated directly into SQL.",
+                "Use a parameterized query.",
+                List.of("The query interpolates request data into SQL.")
+        );
     }
 }

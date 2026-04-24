@@ -16,8 +16,11 @@ import com.codepilot.core.domain.llm.LlmRequest;
 import com.codepilot.core.domain.llm.LlmResponse;
 import com.codepilot.core.domain.llm.LlmUsage;
 import com.codepilot.core.domain.memory.ProjectMemory;
+import com.codepilot.core.domain.plan.ReviewPlan;
 import com.codepilot.core.domain.plan.ReviewTask;
+import com.codepilot.core.domain.plan.TaskGraph;
 import com.codepilot.core.domain.review.Finding;
+import com.codepilot.core.domain.review.ReviewResult;
 import com.codepilot.core.infrastructure.context.ClasspathCompilationStrategyLoader;
 import com.codepilot.core.infrastructure.context.JavaParserAstParser;
 import com.codepilot.core.infrastructure.tool.ReadFileTool;
@@ -48,6 +51,91 @@ class ReviewOrchestratorTest {
 
     @TempDir
     Path repoRoot;
+
+    @Test
+    void skipsContextCompilationWhenRestoredPlanIsAlreadyTerminal() {
+        ReviewTask completedTask = ReviewTask.pending(
+                        "task-restored-security",
+                        ReviewTask.TaskType.SECURITY,
+                        ReviewTask.Priority.HIGH,
+                        List.of("src/main/java/com/example/UserRepository.java"),
+                        List.of("restore without re-running reviewers"),
+                        List.of()
+                )
+                .markReady()
+                .start()
+                .complete();
+        ReviewPlan reviewPlan = new ReviewPlan(
+                "plan-restored-terminal",
+                "session-restored-terminal",
+                DiffSummary.of(List.of(new DiffSummary.ChangedFile(
+                        "src/main/java/com/example/UserRepository.java",
+                        DiffSummary.ChangeType.MODIFIED,
+                        6,
+                        1,
+                        List.of("UserRepository#findByName")
+                ))),
+                TaskGraph.of(List.of(completedTask)),
+                ReviewPlan.ReviewStrategy.SECURITY_FIRST
+        );
+        ReviewResult seedResult = new ReviewResult(
+                "session-restored-terminal",
+                List.of(Finding.reported(
+                        "finding-restored-security",
+                        completedTask.taskId(),
+                        "security",
+                        com.codepilot.core.domain.review.Severity.HIGH,
+                        0.97d,
+                        new Finding.CodeLocation("src/main/java/com/example/UserRepository.java", 5, 5),
+                        "Potential SQL injection risk",
+                        "User input is concatenated directly into SQL.",
+                        "Use a parameterized query.",
+                        List.of("The query interpolates request data into SQL.")
+                )),
+                false,
+                Instant.parse("2026-04-24T05:00:00Z")
+        );
+
+        ObjectMapper objectMapper = JsonMapper.builder().findAndAddModules().build();
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(new ReadFileTool(repoRoot)));
+        TokenCounter tokenCounter = new TokenCounter();
+        ReviewOrchestrator orchestrator = new ReviewOrchestrator(
+                new PlanningAgent(new DiffAnalyzer()),
+                (root, rawDiff, projectMemory, structuredFacts) -> {
+                    throw new IllegalStateException("Context compilation should be skipped for terminal plans");
+                },
+                new ReviewEngine(
+                        new NeverCalledLlmClient(),
+                        toolRegistry,
+                        new ToolExecutor(toolRegistry),
+                        new ToolCallParser(objectMapper),
+                        tokenCounter,
+                        new ContextGovernor(tokenCounter),
+                        new LoopDetector(),
+                        "mock-review-model",
+                        Map.of(),
+                        2
+                ),
+                new ReviewerPool(),
+                new MergeAgent()
+        );
+
+        ReviewOrchestrator.RunResult result = orchestrator.execute(
+                reviewPlan,
+                repoRoot,
+                "",
+                ProjectMemory.empty("project-alpha"),
+                Map.of("entrypoint", "restore-test"),
+                List.of(seedResult),
+                new ReviewOrchestrator.Listener() {
+                }
+        );
+
+        assertThat(result.reviewResult().generatedAt()).isAfterOrEqualTo(seedResult.generatedAt());
+        assertThat(result.reviewResult().findings())
+                .extracting(Finding::title)
+                .containsExactly("Potential SQL injection risk");
+    }
 
     @Test
     void executesIndependentTasksInParallelAndRunsDependentTasksInLaterWave() throws IOException {
@@ -187,6 +275,19 @@ class ReviewOrchestratorTest {
 
         private List<String> dependencyViolations() {
             return List.copyOf(dependencyViolations);
+        }
+    }
+
+    private static final class NeverCalledLlmClient implements LlmClient {
+
+        @Override
+        public LlmResponse chat(LlmRequest request) {
+            throw new IllegalStateException("LLM should not be called when restored tasks are already terminal");
+        }
+
+        @Override
+        public Flux<LlmChunk> stream(LlmRequest request) {
+            throw new UnsupportedOperationException("stream is not used in this test");
         }
     }
 

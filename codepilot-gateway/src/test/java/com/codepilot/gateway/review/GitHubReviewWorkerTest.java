@@ -18,6 +18,10 @@ import com.codepilot.core.domain.memory.ReviewPattern;
 import com.codepilot.core.domain.memory.TeamConvention;
 import com.codepilot.core.domain.plan.ReviewPlan;
 import com.codepilot.core.domain.plan.ReviewTask;
+import com.codepilot.core.domain.plan.TaskGraph;
+import com.codepilot.core.domain.context.DiffSummary;
+import com.codepilot.core.domain.review.Finding;
+import com.codepilot.core.domain.review.ReviewResult;
 import com.codepilot.core.application.plan.PlanningAgent;
 import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
@@ -31,6 +35,7 @@ import com.codepilot.gateway.github.GitHubPullRequestEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import reactor.core.publisher.Flux;
 
 import java.time.Instant;
@@ -46,6 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class GitHubReviewWorkerTest {
@@ -436,6 +442,184 @@ class GitHubReviewWorkerTest {
         verify(eventBuffer).remove("181-0");
     }
 
+    @Test
+    void resumesReportingSessionFromEventsWithoutReRunningReviewersOrMerge() {
+        ObjectMapper objectMapper = JsonMapper.builder().findAndAddModules().build();
+        ReviewSessionRepository repository = new InMemoryReviewSessionRepository();
+        ReviewSseBroadcaster broadcaster = new ReviewSseBroadcaster();
+        RedisStreamReviewEventBuffer eventBuffer = mock(RedisStreamReviewEventBuffer.class);
+        GitHubPullRequestClient pullRequestClient = mock(GitHubPullRequestClient.class);
+        GitHubCommentWriter commentWriter = mock(GitHubCommentWriter.class);
+        RecordingProjectMemoryRepository projectMemoryRepository = new RecordingProjectMemoryRepository(
+                ProjectMemory.empty("acme/repo")
+        );
+
+        GitHubPullRequestEvent event = new GitHubPullRequestEvent(
+                "session-reporting-resume",
+                "acme/repo",
+                "acme",
+                "repo",
+                77,
+                "https://github.com/acme/repo/pull/77",
+                "head-sha",
+                "base-sha"
+        );
+        ReviewPlan reviewPlan = singleTaskPlan("session-reporting-resume");
+        ReviewTask securityTask = reviewPlan.taskGraph().allTasks().getFirst();
+        ReviewResult mergedResult = mergedResult("session-reporting-resume", securityTask.taskId());
+
+        ReviewSession reportingSession = ReviewSession.initialize(
+                        "session-reporting-resume",
+                        "acme/repo",
+                        77,
+                        "https://github.com/acme/repo/pull/77",
+                        Instant.parse("2026-04-24T12:00:00Z")
+                )
+                .startPlanning(reviewPlan.diffSummary(), Instant.parse("2026-04-24T12:01:00Z"))
+                .attachPlan(reviewPlan, Instant.parse("2026-04-24T12:02:00Z"))
+                .startReviewing(Instant.parse("2026-04-24T12:03:00Z"))
+                .startMerging(Instant.parse("2026-04-24T12:05:00Z"))
+                .startReporting(mergedResult, Instant.parse("2026-04-24T12:06:00Z"));
+        reportingSession.events().forEach(repository::append);
+        appendCompletedSecurityTaskEvents(
+                repository,
+                "session-reporting-resume",
+                securityTask,
+                Instant.parse("2026-04-24T12:04:00Z")
+        );
+
+        when(eventBuffer.readPending(10)).thenReturn(List.of(new RedisStreamReviewEventBuffer.BufferedReviewEvent("221-0", event)));
+
+        GitHubReviewWorker worker = new GitHubReviewWorker(
+                eventBuffer,
+                repository,
+                pullRequestClient,
+                commentWriter,
+                broadcaster,
+                new NeverCalledLlmClient(),
+                projectMemoryRepository,
+                new DiffAnalyzer(),
+                new DefaultContextCompiler(
+                        new DiffAnalyzer(),
+                        new JavaParserAstParser(),
+                        new ImpactCalculator(),
+                        new TokenCounter(),
+                        new ClasspathCompilationStrategyLoader(objectMapper).load("java-springboot-maven"),
+                        new MemoryService(new TokenCounter())
+                ),
+                objectMapper,
+                new TokenCounter(),
+                "mock-review-model",
+                Map.of(),
+                4
+        );
+
+        worker.processPendingEvents();
+
+        ArgumentCaptor<ReviewResult> reviewResultCaptor = ArgumentCaptor.forClass(ReviewResult.class);
+        verify(commentWriter).writeReview(any(), reviewResultCaptor.capture());
+        verify(eventBuffer).remove("221-0");
+        verifyNoInteractions(pullRequestClient);
+
+        ReviewSession stored = repository.findById("session-reporting-resume").orElseThrow();
+        assertThat(stored.state()).isEqualTo(AgentState.DONE);
+        assertThat(reviewResultCaptor.getValue().generatedAt()).isEqualTo(mergedResult.generatedAt());
+        assertThat(stored.reviewResult().generatedAt()).isEqualTo(mergedResult.generatedAt());
+    }
+
+    private ReviewPlan singleTaskPlan(String sessionId) {
+        ReviewTask securityTask = ReviewTask.pending(
+                sessionId + "-security",
+                ReviewTask.TaskType.SECURITY,
+                ReviewTask.Priority.HIGH,
+                List.of("src/main/java/com/example/UserRepository.java"),
+                List.of("restore reporting without re-running merge"),
+                List.of()
+        );
+        DiffSummary diffSummary = DiffSummary.of(List.of(new DiffSummary.ChangedFile(
+                "src/main/java/com/example/UserRepository.java",
+                DiffSummary.ChangeType.MODIFIED,
+                6,
+                1,
+                List.of("UserRepository#findByName")
+        )));
+        return new ReviewPlan(
+                "plan-" + sessionId,
+                sessionId,
+                diffSummary,
+                TaskGraph.of(List.of(securityTask)),
+                ReviewPlan.ReviewStrategy.SECURITY_FIRST
+        );
+    }
+
+    private ReviewResult mergedResult(String sessionId, String taskId) {
+        return new ReviewResult(
+                sessionId,
+                List.of(Finding.reported(
+                        "finding-" + taskId,
+                        taskId,
+                        "security",
+                        com.codepilot.core.domain.review.Severity.HIGH,
+                        0.97d,
+                        new Finding.CodeLocation("src/main/java/com/example/UserRepository.java", 4, 4),
+                        "Potential SQL injection risk",
+                        "User input is concatenated directly into SQL.",
+                        "Use a parameterized query.",
+                        List.of("The query interpolates name.")
+                )),
+                false,
+                Instant.parse("2026-04-24T12:05:30Z")
+        );
+    }
+
+    private void appendCompletedSecurityTaskEvents(
+            ReviewSessionRepository repository,
+            String sessionId,
+            ReviewTask securityTask,
+            Instant startedAt
+    ) {
+        repository.append(SessionEvent.of(
+                sessionId,
+                SessionEvent.Type.TASK_STARTED,
+                startedAt,
+                Map.of(
+                        "taskId", securityTask.taskId(),
+                        "type", securityTask.type().name(),
+                        "files", securityTask.targetFiles()
+                )
+        ));
+        repository.append(SessionEvent.of(
+                sessionId,
+                SessionEvent.Type.FINDING_REPORTED,
+                startedAt.plusSeconds(10),
+                Map.ofEntries(
+                        Map.entry("findingId", "finding-" + securityTask.taskId()),
+                        Map.entry("taskId", securityTask.taskId()),
+                        Map.entry("category", "security"),
+                        Map.entry("severity", "HIGH"),
+                        Map.entry("confidence", 0.97d),
+                        Map.entry("file", "src/main/java/com/example/UserRepository.java"),
+                        Map.entry("startLine", 4),
+                        Map.entry("endLine", 4),
+                        Map.entry("title", "Potential SQL injection risk"),
+                        Map.entry("description", "User input is concatenated directly into SQL."),
+                        Map.entry("suggestion", "Use a parameterized query."),
+                        Map.entry("evidence", List.of("The query interpolates name."))
+                )
+        ));
+        repository.append(SessionEvent.of(
+                sessionId,
+                SessionEvent.Type.TASK_COMPLETED,
+                startedAt.plusSeconds(20),
+                Map.of(
+                        "taskId", securityTask.taskId(),
+                        "type", securityTask.type().name(),
+                        "findingCount", 1,
+                        "partial", false
+                )
+        ));
+    }
+
     private static final class TaskAwareLlmClient implements LlmClient {
 
         private static final Pattern TASK_TYPE_PATTERN = Pattern.compile("(?m)^- type: ([A-Z]+)$");
@@ -608,6 +792,19 @@ class GitHubReviewWorkerTest {
                 throw new IllegalStateException("Unable to locate task type in system prompt");
             }
             return ReviewTask.TaskType.valueOf(matcher.group(1));
+        }
+    }
+
+    private static final class NeverCalledLlmClient implements LlmClient {
+
+        @Override
+        public LlmResponse chat(LlmRequest request) {
+            throw new IllegalStateException("LLM should not be called while resuming REPORTING");
+        }
+
+        @Override
+        public Flux<LlmChunk> stream(LlmRequest request) {
+            throw new UnsupportedOperationException("stream is not used in this test");
         }
     }
 

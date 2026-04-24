@@ -121,7 +121,11 @@ public record ReviewSession(
                         sessionId,
                         SessionEvent.Type.PLAN_ATTACHED,
                         occurredAt,
-                        Map.of("planId", reviewPlan.planId(), "taskCount", reviewPlan.taskGraph().allTasks().size())
+                        Map.of(
+                                "planId", reviewPlan.planId(),
+                                "taskCount", reviewPlan.taskGraph().allTasks().size(),
+                                "reviewPlan", reviewPlan
+                        )
                 )),
                 createdAt,
                 completedAt
@@ -148,7 +152,28 @@ public record ReviewSession(
             throw new DomainRuleViolationException("ReviewSession[%s] cannot start reporting without ReviewResult"
                     .formatted(sessionId));
         }
-        return transition(AgentState.REPORTING, diffSummary, reviewPlan, reviewResult, occurredAt);
+        return new ReviewSession(
+                sessionId,
+                projectId,
+                prNumber,
+                prUrl,
+                AgentState.REPORTING,
+                diffSummary,
+                reviewPlan,
+                reviewResult,
+                append(SessionEvent.of(
+                        sessionId,
+                        SessionEvent.Type.SESSION_STATE_CHANGED,
+                        occurredAt,
+                        stateChangePayload(AgentState.REPORTING, Map.of(
+                                "findingCount", reviewResult.findings().size(),
+                                "partial", reviewResult.partial(),
+                                "reviewResult", reviewResult
+                        ))
+                )),
+                createdAt,
+                completedAt
+        );
     }
 
     public ReviewSession markDone(ReviewResult reviewResult, Instant occurredAt) {
@@ -170,7 +195,11 @@ public record ReviewSession(
                         sessionId,
                         SessionEvent.Type.REVIEW_COMPLETED,
                         occurredAt,
-                        Map.of("findingCount", reviewResult.findings().size(), "partial", reviewResult.partial())
+                        Map.of(
+                                "findingCount", reviewResult.findings().size(),
+                                "partial", reviewResult.partial(),
+                                "reviewResult", reviewResult
+                        )
                 )),
                 createdAt,
                 occurredAt
@@ -219,7 +248,7 @@ public record ReviewSession(
                         sessionId,
                         SessionEvent.Type.SESSION_STATE_CHANGED,
                         occurredAt,
-                        Map.of("from", state.name(), "to", nextState.name())
+                        stateChangePayload(nextState, Map.of())
                 )),
                 createdAt,
                 completedAt
@@ -237,6 +266,14 @@ public record ReviewSession(
             throw new DomainRuleViolationException("ReviewSession[%s] cannot transition from %s to %s"
                     .formatted(sessionId, state, nextState));
         }
+    }
+
+    private Map<String, Object> stateChangePayload(AgentState nextState, Map<String, Object> extraPayload) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("from", state.name());
+        payload.put("to", nextState.name());
+        payload.putAll(extraPayload);
+        return Collections.unmodifiableMap(payload);
     }
 
     private void requireState(AgentState expected, String action) {

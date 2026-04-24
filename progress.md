@@ -464,6 +464,26 @@
   - `2026-04-24` 执行 `git diff --check -- codepilot-eval progress.md`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
   - `2026-04-24` 未执行真实 `java -jar codepilot-eval\\target\\codepilot-eval-0.1.0-SNAPSHOT.jar run ...`：当前环境缺少 `CODEPILOT_LLM_BASE_URL` / `CODEPILOT_LLM_API_KEY`，因此保留为离线 CLI 测试 + jar 打包验证，不伪造成功结果
 
+### P17 增强 Session 恢复链路
+
+- 目标
+  - 在 P11 最小 checkpoint + replay 基础上，补强 `PLANNING / REVIEWING / MERGING / REPORTING` 的阶段恢复能力。
+  - 保持现有 `Planning -> Context Compiler -> Multi-Agent Review -> Merge -> Report -> Dream` 主链不重写，只增强事件载荷、恢复回放与 Gateway 续跑分支。
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 的 `ReviewSession` 事件已补齐关键恢复载荷：`PLAN_ATTACHED` 现在携带完整 `ReviewPlan`，进入 `REPORTING` 和 `DONE` 时会把 `ReviewResult` 写入事件，避免恢复链路只能依赖 checkpoint row
+  - `codepilot-core` 的 `SessionStore` 已从“最小状态回放”升级为“计划 + 结果感知恢复”：在 checkpoint 缺失或过旧时，可从事件中回放 `ReviewPlan`、completed task results 和 `ReviewResult`，并恢复 `REVIEWING / REPORTING` 阶段所需的完整输入
+  - `codepilot-core` 的 `ReviewOrchestrator` 已增加“全部 task 已终态时直接 merge seed results”的快速路径，恢复场景下不再为了已完成 plan 重新编译上下文或触发 reviewer
+  - `codepilot-gateway` 的 `GitHubReviewWorker` 已按剩余 task 判断是否还需要拉 diff / 物化工作区；当 `REVIEWING` 阶段实际上没有剩余 task 时直接进入 merge，当 `REPORTING` 恢复时可复用事件回放出的原始 `ReviewResult` 继续 comment / Dream，而不是重新 merge
+  - 新增 / 扩展测试：`SessionStoreTest` 补齐 event-only `REVIEWING`、`REPORTING` 恢复；`ReviewOrchestratorTest` 覆盖终态 plan 的快速返回；`GitHubReviewWorkerTest` 覆盖 event-only `REPORTING` 续跑且不重新执行 reviewer / merge
+- 验收结果
+  - `2026-04-24` 先执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=SessionStoreTest,ReviewOrchestratorTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，确认新增测试先失败：`SessionStore` 无法从事件恢复 `reviewPlan / reviewResult`，`ReviewOrchestrator` 会对终态 plan 继续编译上下文，符合 TDD 预期
+  - `2026-04-24` 实现后再次执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=SessionStoreTest,ReviewOrchestratorTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P17 定向恢复测试全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 82 个测试全部通过，`core / gateway / eval / mcp-server / cli` 无回退
+
 ---
 
 ## 延期清单

@@ -1,5 +1,6 @@
 package com.codepilot.core.application.session;
 
+import com.codepilot.core.application.review.MergeAgent;
 import com.codepilot.core.domain.agent.AgentState;
 import com.codepilot.core.domain.plan.ReviewPlan;
 import com.codepilot.core.domain.plan.ReviewTask;
@@ -10,6 +11,9 @@ import com.codepilot.core.domain.review.Severity;
 import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
 import com.codepilot.core.domain.session.SessionEvent;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -21,10 +25,23 @@ import java.util.Optional;
 
 public final class SessionStore {
 
+    private static final ObjectMapper OBJECT_MAPPER = JsonMapper.builder()
+            .findAndAddModules()
+            .build()
+            .copy()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
     private final ReviewSessionRepository reviewSessionRepository;
 
+    private final MergeAgent mergeAgent;
+
     public SessionStore(ReviewSessionRepository reviewSessionRepository) {
+        this(reviewSessionRepository, new MergeAgent());
+    }
+
+    SessionStore(ReviewSessionRepository reviewSessionRepository, MergeAgent mergeAgent) {
         this.reviewSessionRepository = reviewSessionRepository;
+        this.mergeAgent = mergeAgent;
     }
 
     public Optional<RestoredSession> restore(String sessionId) {
@@ -37,14 +54,18 @@ public final class SessionStore {
         List<SessionEvent> orderedEvents = events.stream()
                 .sorted(Comparator.comparing(SessionEvent::occurredAt))
                 .toList();
-        ReviewSession baseSession = checkpoint.orElseGet(() -> replayMinimalSession(sessionId, orderedEvents));
-        List<ReviewResult> completedTaskResults = replayCompletedTaskResults(baseSession.sessionId(), orderedEvents);
-        ReviewPlan effectivePlan = replayTaskGraph(baseSession.reviewPlan(), orderedEvents, completedTaskResults);
-        ReviewSession restoredSession = withReviewPlan(baseSession, effectivePlan, orderedEvents);
+        ReviewSession replayedSession = replaySession(sessionId, orderedEvents);
+        ReviewSession baseSession = checkpoint.orElse(replayedSession);
+        List<ReviewResult> completedTaskResults = replayCompletedTaskResults(sessionId, orderedEvents);
+
+        ReviewPlan replayedPlan = baseSession.reviewPlan() != null ? baseSession.reviewPlan() : replayedSession.reviewPlan();
+        ReviewPlan effectivePlan = replayTaskGraph(replayedPlan, orderedEvents, completedTaskResults);
+        ReviewResult effectiveReviewResult = resolveReviewResult(baseSession, replayedSession, completedTaskResults);
+        ReviewSession restoredSession = withRecoveredState(baseSession, effectivePlan, effectiveReviewResult, orderedEvents);
         return Optional.of(new RestoredSession(restoredSession, completedTaskResults));
     }
 
-    private ReviewSession replayMinimalSession(String sessionId, List<SessionEvent> events) {
+    private ReviewSession replaySession(String sessionId, List<SessionEvent> events) {
         SessionEvent created = events.stream()
                 .filter(event -> event.type() == SessionEvent.Type.SESSION_CREATED)
                 .findFirst()
@@ -68,19 +89,61 @@ public final class SessionStore {
             }
         }
 
+        ReviewPlan replayedPlan = replayPlan(sessionId, events);
+        ReviewResult replayedReviewResult = replayReviewResult(sessionId, events);
         return new ReviewSession(
                 sessionId,
                 text(created.payload(), "projectId", "unknown-project"),
                 intValue(created.payload().get("prNumber")),
                 text(created.payload(), "prUrl", ""),
                 state,
-                null,
-                null,
-                null,
+                replayedPlan == null ? null : replayedPlan.diffSummary(),
+                replayedPlan,
+                replayedReviewResult,
                 events,
                 created.occurredAt(),
                 completedAt
         );
+    }
+
+    private ReviewPlan replayPlan(String sessionId, List<SessionEvent> events) {
+        for (int index = events.size() - 1; index >= 0; index--) {
+            SessionEvent event = events.get(index);
+            if (event.type() == SessionEvent.Type.PLAN_ATTACHED && event.payload().containsKey("reviewPlan")) {
+                return convert(sessionId, event.payload().get("reviewPlan"), ReviewPlan.class, "reviewPlan");
+            }
+        }
+        return null;
+    }
+
+    private ReviewResult replayReviewResult(String sessionId, List<SessionEvent> events) {
+        for (int index = events.size() - 1; index >= 0; index--) {
+            SessionEvent event = events.get(index);
+            if (event.payload().containsKey("reviewResult")) {
+                return convert(sessionId, event.payload().get("reviewResult"), ReviewResult.class, "reviewResult");
+            }
+        }
+        return null;
+    }
+
+    private ReviewResult resolveReviewResult(
+            ReviewSession baseSession,
+            ReviewSession replayedSession,
+            List<ReviewResult> completedTaskResults
+    ) {
+        if (baseSession.reviewResult() != null) {
+            return baseSession.reviewResult();
+        }
+        if (replayedSession.reviewResult() != null) {
+            return replayedSession.reviewResult();
+        }
+        if ((baseSession.state() == AgentState.REPORTING || baseSession.state() == AgentState.DONE)
+                && !completedTaskResults.isEmpty()) {
+            // Legacy events may miss an explicit reviewResult payload. Re-merge once during restore
+            // so report/dream can continue without re-running reviewer tasks.
+            return mergeAgent.merge(baseSession.sessionId(), completedTaskResults);
+        }
+        return null;
     }
 
     private ReviewPlan replayTaskGraph(
@@ -178,20 +241,42 @@ public final class SessionStore {
         );
     }
 
-    private ReviewSession withReviewPlan(ReviewSession session, ReviewPlan reviewPlan, List<SessionEvent> events) {
+    private ReviewSession withRecoveredState(
+            ReviewSession session,
+            ReviewPlan reviewPlan,
+            ReviewResult reviewResult,
+            List<SessionEvent> events
+    ) {
         return new ReviewSession(
                 session.sessionId(),
                 session.projectId(),
                 session.prNumber(),
                 session.prUrl(),
                 session.state(),
-                session.diffSummary(),
+                session.diffSummary() != null ? session.diffSummary() : reviewPlan == null ? null : reviewPlan.diffSummary(),
                 reviewPlan,
-                session.reviewResult(),
+                reviewResult,
                 events,
                 session.createdAt(),
                 session.completedAt()
         );
+    }
+
+    private <T> T convert(String sessionId, Object value, Class<T> type, String fieldName) {
+        if (value == null) {
+            return null;
+        }
+        if (type.isInstance(value)) {
+            return type.cast(value);
+        }
+        try {
+            return OBJECT_MAPPER.convertValue(value, type);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalStateException(
+                    "Failed to restore %s for session %s".formatted(fieldName, sessionId),
+                    exception
+            );
+        }
     }
 
     private String text(Map<String, Object> payload, String key, String defaultValue) {

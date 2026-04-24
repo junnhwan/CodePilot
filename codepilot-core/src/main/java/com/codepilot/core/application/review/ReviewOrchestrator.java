@@ -142,15 +142,18 @@ public final class ReviewOrchestrator {
             Listener effectiveListener
     ) {
         String sessionId = reviewPlan.sessionId();
+        TaskGraph taskGraph = reviewPlan.taskGraph();
+        List<ReviewResult> taskResults = new ArrayList<>(seedResults);
+        if (taskGraph.allTasks().stream().noneMatch(task -> !task.isTerminal())) {
+            return new RunResult(reviewPlan, mergeAgent.merge(sessionId, taskResults));
+        }
+
         ContextPack contextPack = contextCompiler.compile(
                 repoRoot.toAbsolutePath().normalize(),
                 rawDiff,
                 projectMemory == null ? ProjectMemory.empty(sessionId) : projectMemory,
                 structuredFacts == null ? Map.of() : structuredFacts
         );
-
-        TaskGraph taskGraph = reviewPlan.taskGraph();
-        List<ReviewResult> taskResults = new ArrayList<>(seedResults);
 
         while (taskGraph.allTasks().stream().anyMatch(task -> !task.isTerminal())) {
             List<ReviewTask> availableTasks = taskGraph.availableTasks();
