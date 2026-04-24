@@ -67,6 +67,7 @@ class ScorecardTest {
                 ),
                 120,
                 240,
+                480,
                 null
         );
         EvalRunner.ScenarioResult falsePositive = new EvalRunner.ScenarioResult(
@@ -91,6 +92,7 @@ class ScorecardTest {
                 ),
                 80,
                 160,
+                320,
                 null
         );
 
@@ -105,5 +107,7 @@ class ScorecardTest {
         assertThat(scorecard.metrics().falsePositiveRate()).isEqualTo(0.5d);
         assertThat(scorecard.metrics().endToEndSuccessRate()).isEqualTo(1.0d);
         assertThat(scorecard.metrics().avgContextTokensUsed()).isEqualTo(200.0d);
+        assertThat(scorecard.metrics().avgFullContextTokens()).isEqualTo(400.0d);
+        assertThat(scorecard.metrics().avgTokenEfficiency()).isEqualTo(0.5d);
     }
 }

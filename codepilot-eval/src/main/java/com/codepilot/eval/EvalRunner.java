@@ -48,11 +48,15 @@ public final class EvalRunner {
 
     private final DiffAnalyzer diffAnalyzer;
 
+    private final ToolCallParser toolCallParser;
+
     private final TokenCounter tokenCounter;
 
     private final String model;
 
     private final Map<String, Object> llmParams;
+
+    private final EvalBaselineReviewer baselineReviewer;
 
     public EvalRunner(LlmClient llmClient) {
         this(llmClient, "codepilot-eval-review", Map.of());
@@ -62,42 +66,64 @@ public final class EvalRunner {
         this.llmClient = llmClient;
         this.objectMapper = JsonMapper.builder().findAndAddModules().build();
         this.diffAnalyzer = new DiffAnalyzer();
+        this.toolCallParser = new ToolCallParser(objectMapper);
         this.tokenCounter = new TokenCounter();
         this.model = model;
         this.llmParams = llmParams == null ? Map.of() : Map.copyOf(llmParams);
+        this.baselineReviewer = new EvalBaselineReviewer(llmClient, toolCallParser, tokenCounter, model, this.llmParams);
     }
 
     public RunResult run(List<EvalScenario> scenarios) {
-        String runId = "eval-run-" + Instant.now().toEpochMilli();
-        List<ScenarioResult> scenarioResults = (scenarios == null ? List.<EvalScenario>of() : scenarios).stream()
-                .map(scenario -> execute(runId, scenario))
-                .toList();
-        return new RunResult(runId, scenarioResults, Scorecard.from(runId, scenarioResults));
+        return run(scenarios, EvalBaseline.CODEPILOT);
     }
 
-    private ScenarioResult execute(String runId, EvalScenario scenario) {
+    public RunResult run(List<EvalScenario> scenarios, EvalBaseline baseline) {
+        EvalBaseline effectiveBaseline = baseline == null ? EvalBaseline.CODEPILOT : baseline;
+        String runId = "eval-run-" + effectiveBaseline.cliName() + "-" + Instant.now().toEpochMilli();
+        List<ScenarioResult> scenarioResults = (scenarios == null ? List.<EvalScenario>of() : scenarios).stream()
+                .map(scenario -> execute(runId, scenario, effectiveBaseline))
+                .toList();
+        return new RunResult(runId, effectiveBaseline, model, scenarioResults, Scorecard.from(runId, scenarioResults));
+    }
+
+    private ScenarioResult execute(String runId, EvalScenario scenario, EvalBaseline baseline) {
         Path repoRoot = null;
         long startedAt = System.nanoTime();
+        int fullContextTokens = fullContextTokens(scenario);
+        String sessionId = runId + "-" + scenario.scenarioId();
         try {
-            repoRoot = materializeScenarioWorkspace(scenario);
-            ToolRegistry toolRegistry = toolRegistry(repoRoot, scenario.projectMemory());
-            ReviewOrchestrator orchestrator = orchestrator(toolRegistry, scenario.stopPolicy().maxIterations());
-            RunCapture runCapture = new RunCapture();
-            ReviewOrchestrator.RunResult runResult = orchestrator.run(
-                    runId + "-" + scenario.scenarioId(),
-                    repoRoot,
-                    scenario.rawDiff(),
-                    scenario.projectMemory(),
-                    structuredFacts(scenario),
-                    runCapture
-            );
-            long durationMillis = durationMillis(startedAt);
+            if (baseline == EvalBaseline.CODEPILOT) {
+                repoRoot = materializeScenarioWorkspace(scenario);
+                ToolRegistry toolRegistry = toolRegistry(repoRoot, scenario.projectMemory());
+                ReviewOrchestrator orchestrator = orchestrator(toolRegistry, scenario.stopPolicy().maxIterations());
+                RunCapture runCapture = new RunCapture();
+                ReviewOrchestrator.RunResult runResult = orchestrator.run(
+                        sessionId,
+                        repoRoot,
+                        scenario.rawDiff(),
+                        scenario.projectMemory(),
+                        structuredFacts(scenario),
+                        runCapture
+                );
+                return new ScenarioResult(
+                        scenario,
+                        runCapture.reviewPlan(),
+                        runResult.reviewResult(),
+                        durationMillis(startedAt),
+                        runCapture.contextTokensUsed(),
+                        fullContextTokens,
+                        null
+                );
+            }
+
+            EvalBaselineReviewer.ReviewOutcome baselineOutcome = baselineReviewer.review(baseline, sessionId, scenario);
             return new ScenarioResult(
                     scenario,
-                    runCapture.reviewPlan(),
-                    runResult.reviewResult(),
-                    durationMillis,
-                    runCapture.contextTokensUsed(),
+                    null,
+                    baselineOutcome.reviewResult(),
+                    durationMillis(startedAt),
+                    baselineOutcome.contextTokensUsed(),
+                    fullContextTokens,
                     null
             );
         } catch (RuntimeException | IOException error) {
@@ -107,7 +133,9 @@ public final class EvalRunner {
                     null,
                     durationMillis(startedAt),
                     0,
-                    "Eval scenario failed: scenarioId=%s, message=%s".formatted(scenario.scenarioId(), error.getMessage())
+                    fullContextTokens,
+                    "Eval scenario failed: baseline=%s, scenarioId=%s, message=%s"
+                            .formatted(baseline, scenario.scenarioId(), error.getMessage())
             );
         } finally {
             deleteQuietly(repoRoot);
@@ -175,6 +203,14 @@ public final class EvalRunner {
         return Map.copyOf(facts);
     }
 
+    private int fullContextTokens(EvalScenario scenario) {
+        int total = tokenCounter.countText(scenario.rawDiff());
+        for (EvalScenario.RepositoryFile repositoryFile : scenario.repositoryFiles()) {
+            total += tokenCounter.countText(repositoryFile.content());
+        }
+        return Math.max(total, 0);
+    }
+
     private long durationMillis(long startedAt) {
         return Math.max((System.nanoTime() - startedAt) / 1_000_000L, 0L);
     }
@@ -199,12 +235,18 @@ public final class EvalRunner {
 
     public record RunResult(
             String evalRunId,
+            EvalBaseline baseline,
+            String model,
             List<ScenarioResult> scenarioResults,
             Scorecard scorecard
     ) {
 
         public RunResult {
             evalRunId = requireText(evalRunId, "evalRunId");
+            if (baseline == null) {
+                throw new IllegalArgumentException("baseline must not be null");
+            }
+            model = requireText(model, "model");
             scenarioResults = scenarioResults == null ? List.of() : List.copyOf(scenarioResults);
             if (scorecard == null) {
                 throw new IllegalArgumentException("scorecard must not be null");
@@ -218,12 +260,16 @@ public final class EvalRunner {
             ReviewResult reviewResult,
             long durationMillis,
             int contextTokensUsed,
+            int fullContextTokens,
             String errorMessage
     ) {
 
         public ScenarioResult {
             if (scenario == null) {
                 throw new IllegalArgumentException("scenario must not be null");
+            }
+            if (durationMillis < 0 || contextTokensUsed < 0 || fullContextTokens < 0) {
+                throw new IllegalArgumentException("ScenarioResult metrics must not be negative");
             }
             errorMessage = errorMessage == null || errorMessage.isBlank() ? null : errorMessage.trim();
         }
@@ -270,6 +316,10 @@ public final class EvalRunner {
             return successful()
                     && evaluation.missedGroundTruth().isEmpty()
                     && evaluation.falsePositives().isEmpty();
+        }
+
+        public double tokenEfficiency() {
+            return fullContextTokens <= 0 ? 0.0d : (double) contextTokensUsed / fullContextTokens;
         }
 
         public record Evaluation(

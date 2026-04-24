@@ -41,6 +41,8 @@ public record Scorecard(
         int falsePositives = 0;
         long totalDurationMillis = 0L;
         long totalContextTokens = 0L;
+        long totalFullContextTokens = 0L;
+        double totalTokenEfficiency = 0.0d;
 
         Map<String, Counter> categoryCounters = new LinkedHashMap<>();
         for (EvalRunner.ScenarioResult scenarioResult : results) {
@@ -61,6 +63,8 @@ public record Scorecard(
                 successful++;
                 totalDurationMillis += Math.max(scenarioResult.durationMillis(), 0L);
                 totalContextTokens += Math.max(scenarioResult.contextTokensUsed(), 0L);
+                totalFullContextTokens += Math.max(scenarioResult.fullContextTokens(), 0L);
+                totalTokenEfficiency += scenarioResult.tokenEfficiency();
                 if (scenarioResult.partial()) {
                     partial++;
                 }
@@ -96,6 +100,8 @@ public record Scorecard(
                 falsePositiveRate(matched, falsePositives, groundTruth),
                 successful == 0 ? 0.0d : (double) totalDurationMillis / successful,
                 successful == 0 ? 0.0d : (double) totalContextTokens / successful,
+                successful == 0 ? 0.0d : (double) totalFullContextTokens / successful,
+                successful == 0 ? 0.0d : totalTokenEfficiency / successful,
                 total == 0 ? 0.0d : (double) partial / total,
                 total == 0 ? 0.0d : (double) successful / total
         );
@@ -156,12 +162,14 @@ public record Scorecard(
             double falsePositiveRate,
             double avgReviewDurationMillis,
             double avgContextTokensUsed,
+            double avgFullContextTokens,
+            double avgTokenEfficiency,
             double partialRunRate,
             double endToEndSuccessRate
     ) {
 
         private static Metrics empty() {
-            return new Metrics(0.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d);
+            return new Metrics(0.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d);
         }
     }
 

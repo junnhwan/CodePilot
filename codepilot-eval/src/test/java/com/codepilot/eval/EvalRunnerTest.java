@@ -26,6 +26,7 @@ class EvalRunnerTest {
 
         EvalRunner.RunResult runResult = runner.run(loader.loadDefaultScenarios());
 
+        assertThat(runResult.baseline()).isEqualTo(EvalBaseline.CODEPILOT);
         assertThat(runResult.scenarioResults()).hasSize(4);
         assertThat(runResult.scenarioResults()).allMatch(EvalRunner.ScenarioResult::successful);
         assertThat(runResult.scenarioResults()).allMatch(EvalRunner.ScenarioResult::passed);
@@ -36,8 +37,47 @@ class EvalRunnerTest {
         assertThat(runResult.scorecard().metrics().recall()).isEqualTo(1.0d);
         assertThat(runResult.scorecard().metrics().partialRunRate()).isEqualTo(0.0d);
         assertThat(runResult.scorecard().metrics().avgContextTokensUsed()).isGreaterThan(0.0d);
+        assertThat(runResult.scorecard().metrics().avgTokenEfficiency()).isPositive();
         assertThat(runResult.scorecard().byCategory().get("SECURITY").recall()).isEqualTo(1.0d);
         assertThat(runResult.scorecard().byCategory().get("PERF").precision()).isEqualTo(1.0d);
+    }
+
+    @Test
+    void capturesScenarioAndBaselineInErrorOutput() {
+        EvalScenario scenario = new EvalScenario(
+                "eval-error-001",
+                "Broken baseline scenario",
+                "Triggers a baseline error for assertion.",
+                "eval-error-project",
+                null,
+                List.of(new EvalScenario.RepositoryFile(
+                        "src/main/java/com/example/Broken.java",
+                        List.of("class Broken {}")
+                )),
+                List.of("diff --git a/src/main/java/com/example/Broken.java b/src/main/java/com/example/Broken.java"),
+                null,
+                List.of(),
+                new EvalScenario.StopPolicy(6, 5)
+        );
+
+        EvalRunner.RunResult runResult = new EvalRunner(new LlmClient() {
+            @Override
+            public LlmResponse chat(LlmRequest request) {
+                throw new IllegalStateException("boom");
+            }
+
+            @Override
+            public Flux<LlmChunk> stream(LlmRequest request) {
+                throw new UnsupportedOperationException("stream is not used in this test");
+            }
+        }).run(List.of(scenario), EvalBaseline.DIRECT_LLM);
+
+        assertThat(runResult.scorecard().scenariosError()).isEqualTo(1);
+        assertThat(runResult.scenarioResults()).singleElement()
+                .extracting(EvalRunner.ScenarioResult::errorMessage)
+                .asString()
+                .contains("scenarioId=eval-error-001")
+                .contains("baseline=DIRECT_LLM");
     }
 
     private static final class FixtureAwareLlmClient implements LlmClient {

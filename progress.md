@@ -370,17 +370,31 @@
 ### P13 评测与量化
 
 - 目标
-  - 在 47 个评测场景上跑端到端评测，产出 Baseline 对比数据，提炼简历亮点。
+  - 在现有 `codepilot-eval` 基础上，把 P10 的最小 Eval Center 收敛成 P13 的最小可交付评测闭环。
+  - 补齐 baseline 对比、稳定 scorecard / report 输出、可执行评测入口和验证链路。
 - 计划产出
-  - 完整 Scorecard
   - Baseline 对比实验结果
-  - 评测数据可视化
-  - 简历项目描述 + 面试话术
-  - 技术博客
+  - 更完整的 Scorecard / Report 输出
+  - 可执行评测入口
+  - 统计正确性、输出稳定性、错误可定位的测试
 - 优先级
   - `P1`
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-eval` 新增 `EvalBaseline`、`EvalBaselineReviewer`、`EvalSuiteRunner`、`EvalSuiteResult`，在不重写现有 review 主链的前提下，把评测收敛为 “`CodePilot / Direct LLM / Full Context LLM`” 三路最小 baseline 对比闭环；其中 `CodePilot` 仍然复用现有 `Planning -> Context Compiler -> Multi-Agent Review -> Merge`
+  - `EvalRunner` 升级为支持按 baseline 运行场景，保留原有 `run(List<EvalScenario>)` 语义不变；补充 `fullContextTokens`、`tokenEfficiency` 和带 `baseline + scenarioId` 的错误信息，便于定位统计异常和运行失败
+  - `Scorecard` 升级为输出更完整的量化指标：除现有 precision / recall / F1 / falsePositiveRate / endToEndSuccessRate 外，新增 `avgFullContextTokens`、`avgTokenEfficiency`，便于对比上下文编译收益
+  - `EvalScenarioLoader` 补齐文件系统场景包加载，支持评测入口从 classpath resource 或外部 JSON pack 读取场景，不局限于内置 `minimal-scenario-pack`
+  - 新增 `EvalReportWriter`，将评测结果稳定落盘为 `report.json + report.md`；Markdown 报告包含 scorecard 汇总、baseline delta 和 scenario matrix，可直接作为后续简历 / 面试材料的原始数据来源
+  - 新增 `CodePilotEvalCli` 并为 `codepilot-eval` 配置 Spring Boot 可执行主类，支持本地运行 `java -jar codepilot-eval\\target\\codepilot-eval-0.1.0-SNAPSHOT.jar run ...` 生成评测报告
+  - 新增 P13 定向测试：`EvalSuiteRunnerTest`、`EvalReportWriterTest`、`CodePilotEvalCliTest`，并扩展 `EvalRunnerTest`、`EvalScenarioLoaderTest`、`ScorecardTest`；覆盖 baseline 对比、报告输出、CLI 入口、文件场景包加载和错误定位
+  - 本阶段刻意没有把 `Lint Only`、Dream、Global Knowledge、PgVector 完整检索混入 P13，保持评测能力与当前仓库真相一致，避免为了“看起来完整”引入假能力
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-eval -am "-Dtest=EvalRunnerTest,EvalScenarioLoaderTest,ScorecardTest,EvalSuiteRunnerTest,EvalReportWriterTest,CodePilotEvalCliTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P13 定向测试 8 项全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 64 个测试全部通过，`core / gateway / eval / mcp-server / cli` 无回退
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-eval -am package -DskipTests`，成功生成可执行 `codepilot-eval-0.1.0-SNAPSHOT.jar`
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
 
 ---
 
