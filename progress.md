@@ -326,7 +326,21 @@
 - 优先级
   - `P2`
 - 当前状态
-  - `PENDING`
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 新增 `application/session/SessionStore`，在现有 `ReviewSessionRepository + SessionEvent` 基础上落地最小恢复闭环：优先从 checkpoint session 恢复，再回放 task/finding 事件重建 `ReviewPlan.taskGraph` 和已完成 task 的 `ReviewResult`
+  - `ReviewSession.initialize` 的 `SESSION_CREATED` 事件补齐 `projectId / prNumber / prUrl` 元数据，使 session 在没有 checkpoint 时也能从事件恢复到最小可运行阶段状态
+  - `ReviewOrchestrator` 新增带 `seedResults` 的执行入口，支持把已完成 task 的回放结果直接带入 merge，避免 review 恢复时把已完成 task 全量重跑
+  - `codepilot-gateway` 的 `GitHubReviewWorker` 已切换为按 session 当前阶段恢复：`IDLE/PLANNING` 继续 planning，`REVIEWING` 只执行剩余 task，`MERGING/REPORTING` 直接基于 checkpoint 或事件回放结果继续推进
+  - `FINDING_REPORTED` 事件已补齐完整 finding 载荷，保证中断后不仅能恢复正确阶段，还能把已完成 reviewer 的 finding 带入后续 merge / report
+  - 新增 P11 定向测试：`SessionStoreTest` 覆盖 checkpoint + event replay 和 event-only restore，`GitHubReviewWorkerTest` 覆盖 `REVIEWING` 阶段中断后只续跑剩余 task 的恢复链路
+  - 本阶段保持现有 task timeout 运行语义不变，没有为了“恢复”重写 `ReviewEngine / ReviewOrchestrator` 的超时分支
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core "-Dtest=SessionStoreTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，P11 core 恢复测试通过
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-gateway -am "-Dtest=GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，Gateway worker 恢复测试通过
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=SessionStoreTest,ReviewSessionTest,MybatisReviewSessionRepositoryTest,ReviewOrchestratorTest,GitHubReviewWorkerTest,GitHubWebhookIntakeServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，受影响 core / gateway 定向验证全部通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓 53 个测试全部通过
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示工作区 LF/CRLF 转换警告，无格式错误）
 
 ### P12 MCP Server
 

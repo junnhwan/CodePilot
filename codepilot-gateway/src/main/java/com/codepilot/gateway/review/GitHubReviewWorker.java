@@ -8,6 +8,7 @@ import com.codepilot.core.application.review.ReviewOrchestrator;
 import com.codepilot.core.application.review.ReviewerPool;
 import com.codepilot.core.application.review.TokenCounter;
 import com.codepilot.core.application.review.ToolCallParser;
+import com.codepilot.core.application.session.SessionStore;
 import com.codepilot.core.application.tool.ToolExecutor;
 import com.codepilot.core.application.tool.ToolRegistry;
 import com.codepilot.core.domain.agent.AgentState;
@@ -52,6 +53,8 @@ public class GitHubReviewWorker {
     private final RedisStreamReviewEventBuffer eventBuffer;
 
     private final ReviewSessionRepository reviewSessionRepository;
+
+    private final SessionStore sessionStore;
 
     private final GitHubPullRequestClient pullRequestClient;
 
@@ -126,6 +129,7 @@ public class GitHubReviewWorker {
     ) {
         this.eventBuffer = eventBuffer;
         this.reviewSessionRepository = reviewSessionRepository;
+        this.sessionStore = new SessionStore(reviewSessionRepository);
         this.pullRequestClient = pullRequestClient;
         this.commentWriter = commentWriter;
         this.sseBroadcaster = sseBroadcaster;
@@ -154,52 +158,99 @@ public class GitHubReviewWorker {
     }
 
     private void process(GitHubPullRequestEvent event) {
-        ReviewSession session = reviewSessionRepository.findById(event.sessionId())
+        SessionStore.RestoredSession restored = sessionStore.restore(event.sessionId())
                 .orElseThrow(() -> new IllegalStateException("Missing ReviewSession %s".formatted(event.sessionId())));
-        String rawDiff = pullRequestClient.fetchPullRequestDiff(event.owner(), event.repository(), event.prNumber());
-        ReviewPlan reviewPlan = new PlanningAgent(diffAnalyzer).plan(event.sessionId(), rawDiff);
+        ReviewSession session = restored.session();
+        if (session.state() == AgentState.DONE) {
+            sseBroadcaster.complete(event.sessionId());
+            return;
+        }
+        if (session.state() == AgentState.FAILED) {
+            throw new IllegalStateException("ReviewSession %s is already failed".formatted(event.sessionId()));
+        }
 
-        Instant now = Instant.now();
-        session = session.startPlanning(reviewPlan.diffSummary(), now);
-        reviewSessionRepository.save(session);
-        session = session.attachPlan(reviewPlan, Instant.now());
-        reviewSessionRepository.save(session);
-        sseBroadcaster.publish(event.sessionId(), "plan_ready", Map.of(
-                "planId", reviewPlan.planId(),
-                "taskCount", reviewPlan.taskGraph().allTasks().size(),
-                "strategy", reviewPlan.strategy().name()
-        ));
+        ProjectMemory projectMemory = projectMemoryRepository.findByProjectId(event.projectId())
+                .orElseGet(() -> ProjectMemory.empty(event.projectId()));
+        String rawDiff = "";
 
-        session = session.startReviewing(Instant.now());
-        reviewSessionRepository.save(session);
+        if (session.state() == AgentState.IDLE
+                || session.state() == AgentState.PLANNING
+                || session.state() == AgentState.REVIEWING) {
+            rawDiff = pullRequestClient.fetchPullRequestDiff(event.owner(), event.repository(), event.prNumber());
+        }
 
-        Path repoRoot = materializeWorkspace(event, pullRequestClient.fetchPullRequestFiles(
-                event.owner(),
-                event.repository(),
-                event.prNumber(),
-                event.headSha()
-        ));
-        try {
-            ProjectMemory projectMemory = projectMemoryRepository.findByProjectId(event.projectId())
-                    .orElseGet(() -> ProjectMemory.empty(event.projectId()));
-            ReviewResult reviewResult = buildReviewOrchestrator(repoRoot, event.projectId()).execute(
-                    reviewPlan,
-                    repoRoot,
-                    rawDiff,
-                    projectMemory,
-                    Map.of(
-                            "language", "java",
-                            "entrypoint", "github-webhook",
-                            "repository", event.projectId(),
-                            "headSha", event.headSha()
-                    ),
-                    new GatewayListener(event.sessionId())
-            ).reviewResult();
+        if (session.state() == AgentState.IDLE) {
+            ReviewPlan reviewPlan = new PlanningAgent(diffAnalyzer).plan(event.sessionId(), rawDiff);
+            session = session.startPlanning(reviewPlan.diffSummary(), Instant.now());
+            reviewSessionRepository.save(session);
+        }
 
+        if (session.state() == AgentState.PLANNING && session.reviewPlan() == null) {
+            ReviewPlan reviewPlan = new PlanningAgent(diffAnalyzer).plan(event.sessionId(), rawDiff);
+            session = session.attachPlan(reviewPlan, Instant.now());
+            reviewSessionRepository.save(session);
+            sseBroadcaster.publish(event.sessionId(), "plan_ready", Map.of(
+                    "planId", reviewPlan.planId(),
+                    "taskCount", reviewPlan.taskGraph().allTasks().size(),
+                    "strategy", reviewPlan.strategy().name()
+            ));
+        }
+
+        if (session.state() == AgentState.PLANNING) {
+            session = session.startReviewing(Instant.now());
+            reviewSessionRepository.save(session);
+        }
+
+        ReviewResult reviewResult = session.reviewResult();
+        if (session.state() == AgentState.REVIEWING) {
+            ReviewPlan effectivePlan = session.reviewPlan();
+            if (effectivePlan == null) {
+                throw new IllegalStateException("ReviewSession %s cannot resume REVIEWING without ReviewPlan"
+                        .formatted(event.sessionId()));
+            }
+
+            Path repoRoot = materializeWorkspace(event, pullRequestClient.fetchPullRequestFiles(
+                    event.owner(),
+                    event.repository(),
+                    event.prNumber(),
+                    event.headSha()
+            ));
+            try {
+                reviewResult = buildReviewOrchestrator(repoRoot, event.projectId()).execute(
+                        effectivePlan,
+                        repoRoot,
+                        rawDiff,
+                        projectMemory,
+                        Map.of(
+                                "language", "java",
+                                "entrypoint", "github-webhook",
+                                "repository", event.projectId(),
+                                "headSha", event.headSha()
+                        ),
+                        restored.completedTaskResults(),
+                        new GatewayListener(event.sessionId())
+                ).reviewResult();
+            } finally {
+                deleteWorkspace(repoRoot);
+            }
             session = session.startMerging(Instant.now());
             reviewSessionRepository.save(session);
+        }
+
+        if (session.state() == AgentState.MERGING) {
+            reviewResult = reviewResult == null
+                    ? new MergeAgent().merge(event.sessionId(), restored.completedTaskResults())
+                    : reviewResult;
             session = session.startReporting(reviewResult, Instant.now());
             reviewSessionRepository.save(session);
+        }
+
+        if (session.state() == AgentState.REPORTING) {
+            reviewResult = reviewResult == null ? session.reviewResult() : reviewResult;
+            if (reviewResult == null) {
+                throw new IllegalStateException("ReviewSession %s cannot report without ReviewResult"
+                        .formatted(event.sessionId()));
+            }
             commentWriter.writeReview(event, reviewResult);
             session = session.markDone(reviewResult, Instant.now());
             reviewSessionRepository.save(session);
@@ -209,8 +260,6 @@ public class GitHubReviewWorker {
                     "partial", reviewResult.partial()
             ));
             sseBroadcaster.complete(event.sessionId());
-        } finally {
-            deleteWorkspace(repoRoot);
         }
     }
 
@@ -328,12 +377,19 @@ public class GitHubReviewWorker {
 
         @Override
         public void onFindingReported(com.codepilot.core.domain.plan.ReviewTask reviewTask, Finding finding) {
-            appendEvent(sessionId, SessionEvent.Type.FINDING_REPORTED, Map.of(
-                    "taskId", reviewTask.taskId(),
-                    "title", finding.title(),
-                    "severity", finding.severity().name(),
-                    "file", finding.location().filePath(),
-                    "line", finding.location().startLine()
+            appendEvent(sessionId, SessionEvent.Type.FINDING_REPORTED, Map.ofEntries(
+                    Map.entry("findingId", finding.findingId()),
+                    Map.entry("taskId", reviewTask.taskId()),
+                    Map.entry("category", finding.category()),
+                    Map.entry("severity", finding.severity().name()),
+                    Map.entry("confidence", finding.confidence()),
+                    Map.entry("file", finding.location().filePath()),
+                    Map.entry("startLine", finding.location().startLine()),
+                    Map.entry("endLine", finding.location().endLine()),
+                    Map.entry("title", finding.title()),
+                    Map.entry("description", finding.description()),
+                    Map.entry("suggestion", finding.suggestion()),
+                    Map.entry("evidence", finding.evidence())
             ));
             sseBroadcaster.publish(sessionId, "finding_found", Map.of(
                     "taskId", reviewTask.taskId(),

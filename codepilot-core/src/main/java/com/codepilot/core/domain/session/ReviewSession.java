@@ -68,7 +68,12 @@ public record ReviewSession(
                 sessionId,
                 SessionEvent.Type.SESSION_CREATED,
                 createdAt,
-                Map.of("state", AgentState.IDLE.name())
+                Map.of(
+                        "state", AgentState.IDLE.name(),
+                        "projectId", projectId,
+                        "prNumber", prNumber == null ? "" : prNumber,
+                        "prUrl", prUrl == null ? "" : prUrl
+                )
         );
         return new ReviewSession(
                 sessionId,

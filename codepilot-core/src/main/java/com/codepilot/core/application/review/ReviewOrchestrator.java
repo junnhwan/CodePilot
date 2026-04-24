@@ -86,7 +86,7 @@ public final class ReviewOrchestrator {
         } : listener;
         ReviewPlan reviewPlan = planningAgent.plan(sessionId, rawDiff);
         effectiveListener.onPlanReady(reviewPlan);
-        return executeInternal(reviewPlan, repoRoot, rawDiff, projectMemory, structuredFacts, effectiveListener);
+        return executeInternal(reviewPlan, repoRoot, rawDiff, projectMemory, structuredFacts, List.of(), effectiveListener);
     }
 
     public RunResult execute(
@@ -96,7 +96,7 @@ public final class ReviewOrchestrator {
             ProjectMemory projectMemory,
             Map<String, String> structuredFacts
     ) {
-        return execute(reviewPlan, repoRoot, rawDiff, projectMemory, structuredFacts, new Listener() {
+        return execute(reviewPlan, repoRoot, rawDiff, projectMemory, structuredFacts, List.of(), new Listener() {
         });
     }
 
@@ -108,12 +108,25 @@ public final class ReviewOrchestrator {
             Map<String, String> structuredFacts,
             Listener listener
     ) {
+        return execute(reviewPlan, repoRoot, rawDiff, projectMemory, structuredFacts, List.of(), listener);
+    }
+
+    public RunResult execute(
+            ReviewPlan reviewPlan,
+            Path repoRoot,
+            String rawDiff,
+            ProjectMemory projectMemory,
+            Map<String, String> structuredFacts,
+            List<ReviewResult> seedResults,
+            Listener listener
+    ) {
         return executeInternal(
                 reviewPlan,
                 repoRoot,
                 rawDiff,
                 projectMemory,
                 structuredFacts,
+                seedResults == null ? List.of() : seedResults,
                 listener == null ? new Listener() {
                 } : listener
         );
@@ -125,6 +138,7 @@ public final class ReviewOrchestrator {
             String rawDiff,
             ProjectMemory projectMemory,
             Map<String, String> structuredFacts,
+            List<ReviewResult> seedResults,
             Listener effectiveListener
     ) {
         String sessionId = reviewPlan.sessionId();
@@ -136,7 +150,7 @@ public final class ReviewOrchestrator {
         );
 
         TaskGraph taskGraph = reviewPlan.taskGraph();
-        List<ReviewResult> taskResults = new ArrayList<>();
+        List<ReviewResult> taskResults = new ArrayList<>(seedResults);
 
         while (taskGraph.allTasks().stream().anyMatch(task -> !task.isTerminal())) {
             List<ReviewTask> availableTasks = taskGraph.availableTasks();

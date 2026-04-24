@@ -16,7 +16,9 @@ import com.codepilot.core.domain.memory.ProjectMemory;
 import com.codepilot.core.domain.memory.ProjectMemoryRepository;
 import com.codepilot.core.domain.memory.ReviewPattern;
 import com.codepilot.core.domain.memory.TeamConvention;
+import com.codepilot.core.domain.plan.ReviewPlan;
 import com.codepilot.core.domain.plan.ReviewTask;
+import com.codepilot.core.application.plan.PlanningAgent;
 import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
 import com.codepilot.core.domain.session.SessionEvent;
@@ -36,6 +38,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -195,11 +198,170 @@ class GitHubReviewWorkerTest {
         verify(eventBuffer).remove("171-0");
     }
 
+    @Test
+    void resumesReviewingSessionAndOnlyExecutesRemainingTasks() {
+        ObjectMapper objectMapper = JsonMapper.builder().findAndAddModules().build();
+        ReviewSessionRepository repository = new InMemoryReviewSessionRepository();
+        ReviewSseBroadcaster broadcaster = new ReviewSseBroadcaster();
+        RedisStreamReviewEventBuffer eventBuffer = mock(RedisStreamReviewEventBuffer.class);
+        GitHubPullRequestClient pullRequestClient = mock(GitHubPullRequestClient.class);
+        GitHubCommentWriter commentWriter = mock(GitHubCommentWriter.class);
+        ProjectMemoryRepository projectMemoryRepository = new ProjectMemoryRepository() {
+            @Override
+            public Optional<ProjectMemory> findByProjectId(String projectId) {
+                return Optional.of(ProjectMemory.empty(projectId));
+            }
+
+            @Override
+            public void save(ProjectMemory projectMemory) {
+                throw new UnsupportedOperationException("save is not used in this test");
+            }
+        };
+
+        GitHubPullRequestEvent event = new GitHubPullRequestEvent(
+                "session-resume",
+                "acme/repo",
+                "acme",
+                "repo",
+                42,
+                "https://github.com/acme/repo/pull/42",
+                "head-sha",
+                "base-sha"
+        );
+
+        String rawDiff = """
+                diff --git a/src/main/java/com/example/UserRepository.java b/src/main/java/com/example/UserRepository.java
+                @@ -1,1 +1,6 @@
+                +package com.example;
+                +
+                +class UserRepository {
+                +  String findByName(String name) {
+                +    return jdbcTemplate.queryForObject("select * from users where name = '" + name + "'", String.class);
+                +  }
+                +}
+                """;
+        ReviewPlan reviewPlan = new PlanningAgent(new DiffAnalyzer()).plan("session-resume", rawDiff);
+        ReviewTask securityTask = reviewPlan.taskGraph().allTasks().stream()
+                .filter(task -> task.type() == ReviewTask.TaskType.SECURITY)
+                .findFirst()
+                .orElseThrow();
+
+        repository.save(ReviewSession.initialize(
+                        "session-resume",
+                        "acme/repo",
+                        42,
+                        "https://github.com/acme/repo/pull/42",
+                        Instant.parse("2026-04-24T11:00:00Z")
+                )
+                .startPlanning(reviewPlan.diffSummary(), Instant.parse("2026-04-24T11:01:00Z"))
+                .attachPlan(reviewPlan, Instant.parse("2026-04-24T11:02:00Z"))
+                .startReviewing(Instant.parse("2026-04-24T11:03:00Z")));
+        repository.append(SessionEvent.of(
+                "session-resume",
+                SessionEvent.Type.TASK_STARTED,
+                Instant.parse("2026-04-24T11:04:00Z"),
+                Map.of(
+                        "taskId", securityTask.taskId(),
+                        "type", securityTask.type().name(),
+                        "files", securityTask.targetFiles()
+                )
+        ));
+        repository.append(SessionEvent.of(
+                "session-resume",
+                SessionEvent.Type.FINDING_REPORTED,
+                Instant.parse("2026-04-24T11:04:10Z"),
+                Map.ofEntries(
+                        Map.entry("findingId", "finding-resumed-security"),
+                        Map.entry("taskId", securityTask.taskId()),
+                        Map.entry("category", "security"),
+                        Map.entry("severity", "HIGH"),
+                        Map.entry("confidence", 0.99d),
+                        Map.entry("file", "src/main/java/com/example/UserRepository.java"),
+                        Map.entry("startLine", 4),
+                        Map.entry("endLine", 4),
+                        Map.entry("title", "Potential SQL injection risk"),
+                        Map.entry("description", "User input is concatenated directly into SQL."),
+                        Map.entry("suggestion", "Use a parameterized query."),
+                        Map.entry("evidence", List.of("The query interpolates request data into SQL."))
+                )
+        ));
+        repository.append(SessionEvent.of(
+                "session-resume",
+                SessionEvent.Type.TASK_COMPLETED,
+                Instant.parse("2026-04-24T11:04:20Z"),
+                Map.of(
+                        "taskId", securityTask.taskId(),
+                        "type", securityTask.type().name(),
+                        "findingCount", 1,
+                        "partial", false
+                )
+        ));
+
+        when(eventBuffer.readPending(10)).thenReturn(List.of(new RedisStreamReviewEventBuffer.BufferedReviewEvent("181-0", event)));
+        when(pullRequestClient.fetchPullRequestDiff("acme", "repo", 42)).thenReturn(rawDiff);
+        when(pullRequestClient.fetchPullRequestFiles("acme", "repo", 42, "head-sha"))
+                .thenReturn(List.of(new GitHubPullRequestClient.PullRequestFileSnapshot(
+                        "src/main/java/com/example/UserRepository.java",
+                        "modified",
+                        """
+                        package com.example;
+
+                        class UserRepository {
+                            String findByName(String name) {
+                                return jdbcTemplate.queryForObject("select * from users where name = '" + name + "'", String.class);
+                            }
+                        }
+                        """
+                )));
+
+        RemainingTaskLlmClient llmClient = new RemainingTaskLlmClient();
+        GitHubReviewWorker worker = new GitHubReviewWorker(
+                eventBuffer,
+                repository,
+                pullRequestClient,
+                commentWriter,
+                broadcaster,
+                llmClient,
+                projectMemoryRepository,
+                new DiffAnalyzer(),
+                new DefaultContextCompiler(
+                        new DiffAnalyzer(),
+                        new JavaParserAstParser(),
+                        new ImpactCalculator(),
+                        new TokenCounter(),
+                        new ClasspathCompilationStrategyLoader(objectMapper).load("java-springboot-maven"),
+                        new MemoryService(new TokenCounter())
+                ),
+                objectMapper,
+                new TokenCounter(),
+                "mock-review-model",
+                Map.of(),
+                4
+        );
+
+        worker.processPendingEvents();
+
+        ReviewSession stored = repository.findById("session-resume").orElseThrow();
+        assertThat(stored.state()).isEqualTo(AgentState.DONE);
+        assertThat(stored.reviewResult()).isNotNull();
+        assertThat(stored.reviewResult().findings())
+                .extracting(finding -> finding.title())
+                .containsExactly("Potential SQL injection risk");
+        assertThat(llmClient.seenTaskTypes())
+                .containsExactlyInAnyOrder(
+                        ReviewTask.TaskType.PERF,
+                        ReviewTask.TaskType.STYLE,
+                        ReviewTask.TaskType.MAINTAIN
+                );
+        verify(commentWriter).writeReview(any(), any());
+        verify(eventBuffer).remove("181-0");
+    }
+
     private static final class TaskAwareLlmClient implements LlmClient {
 
         private static final Pattern TASK_TYPE_PATTERN = Pattern.compile("(?m)^- type: ([A-Z]+)$");
 
-        private final List<ReviewTask.TaskType> seenTaskTypes = new ArrayList<>();
+        private final List<ReviewTask.TaskType> seenTaskTypes = new CopyOnWriteArrayList<>();
 
         public LlmResponse chat(LlmRequest request) {
             ReviewTask.TaskType taskType = taskType(request.messages());
@@ -245,6 +407,47 @@ class GitHubReviewWorkerTest {
                       "findings": []
                     }
                     """, List.of(), new LlmUsage(90, 20, 110), "stop");
+        }
+
+        @Override
+        public Flux<LlmChunk> stream(LlmRequest request) {
+            throw new UnsupportedOperationException("stream is not used in this test");
+        }
+
+        private ReviewTask.TaskType taskType(List<LlmMessage> messages) {
+            String systemPrompt = messages.stream()
+                    .filter(message -> "system".equals(message.role()))
+                    .map(LlmMessage::content)
+                    .findFirst()
+                    .orElseThrow();
+            Matcher matcher = TASK_TYPE_PATTERN.matcher(systemPrompt);
+            if (!matcher.find()) {
+                throw new IllegalStateException("Unable to locate task type in system prompt");
+            }
+            return ReviewTask.TaskType.valueOf(matcher.group(1));
+        }
+
+        private List<ReviewTask.TaskType> seenTaskTypes() {
+            return List.copyOf(seenTaskTypes);
+        }
+    }
+
+    private static final class RemainingTaskLlmClient implements LlmClient {
+
+        private static final Pattern TASK_TYPE_PATTERN = Pattern.compile("(?m)^- type: ([A-Z]+)$");
+
+        private final List<ReviewTask.TaskType> seenTaskTypes = new CopyOnWriteArrayList<>();
+
+        @Override
+        public LlmResponse chat(LlmRequest request) {
+            ReviewTask.TaskType taskType = taskType(request.messages());
+            seenTaskTypes.add(taskType);
+            return new LlmResponse("""
+                    {
+                      "decision": "DELIVER",
+                      "findings": []
+                    }
+                    """, List.of(), new LlmUsage(80, 20, 100), "stop");
         }
 
         @Override
