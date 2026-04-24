@@ -4,6 +4,7 @@ import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
 import com.codepilot.gateway.github.GitHubPullRequestEvent;
 import com.codepilot.gateway.github.GitHubPullRequestWebhookPayload;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -24,7 +25,8 @@ public class GitHubWebhookIntakeService {
 
     private final Duration deduplicationTtl;
 
-    public GitHubWebhookIntakeService(
+    @Autowired
+    GitHubWebhookIntakeService(
             RedisWebhookDeduplicator deduplicator,
             RedisStreamReviewEventBuffer eventBuffer,
             ReviewSessionRepository reviewSessionRepository,

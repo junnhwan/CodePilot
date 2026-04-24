@@ -503,6 +503,27 @@
   - `2026-04-24` 执行 `.\mvnw.cmd test`，确认文档改动未引入仓库回退
   - `2026-04-24` 提交信息使用 `docs: 补充 CodePilot README 与交付材料`
 
+### 补充修复：Gateway 本地启动与 IDE 联调配置
+
+- 目标
+  - 修复 Gateway 在本地 / IDEA 启动时的 Spring Bean 装配失败，并让远程 Redis 与 OpenAI-compatible 中转地址可以按现有环境变量配置直接生效
+  - 保持现有 `Webhook -> Worker -> Review -> Report -> Dream` 主链不重写，只补运行时装配与配置桥接缺口
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `GitHubWebhookIntakeService` 与 `GitHubReviewWorker` 运行时构造器已显式标注注入入口，避免 Spring 因多构造器歧义导致 Gateway 启动失败
+  - `codepilot-gateway` 运行时补齐 `ProjectMemoryRepository` Bean，继续沿用当前 Gateway 的内存态仓储风格，不把 MyBatis / 持久化依赖硬拉进本地启动主链
+  - `codepilot-gateway/src/main/resources/application.yml` 已把 `CODEPILOT_REDIS_URL / USERNAME / PASSWORD` 显式桥接到 `spring.data.redis.*`，远程 Redis 配置可直接驱动 `StringRedisTemplate` 与 actuator redis health
+  - 新增轻量配置回归测试，锁定 Redis 与 OpenAI-compatible 地址的环境变量映射，避免后续文档或配置回退
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=GitHubWebhookIntakeServiceContextTest,GitHubReviewWorkerContextTest,GatewayApplicationPropertyMappingTest,GitHubReviewWorkerTest,GitHubWebhookIntakeServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，Gateway 启动装配与配置映射定向测试通过
+  - `2026-04-24` 执行 `git diff --check`，检查通过（仅提示 LF/CRLF 转换警告，无格式错误）
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-gateway -am package -DskipTests`，成功生成可执行 `codepilot-gateway-0.1.0-SNAPSHOT.jar`
+  - `2026-04-24` 以 `SERVER_PORT=18081`、`OPENAI_BASE_URL`、`OPENAI_API_KEY`、`CODEPILOT_REDIS_URL`、`CODEPILOT_REDIS_USERNAME`、`CODEPILOT_REDIS_PASSWORD`、`GITHUB_API_TOKEN`、`GITHUB_WEBHOOK_SECRET` 启动 `java -jar codepilot-gateway\\target\\codepilot-gateway-0.1.0-SNAPSHOT.jar`，日志确认进入 `Tomcat started on port 18081` 与 `Started CodePilotGatewayApplication`
+  - `2026-04-24` 若 Redis 地址不可达，运行期任务与 `/actuator/health` 仍会因 Redis 连接失败显示 `DOWN`；该现象属于环境依赖未就绪，而不是 Gateway 启动主链失败
+
 ---
 
 ## 延期清单

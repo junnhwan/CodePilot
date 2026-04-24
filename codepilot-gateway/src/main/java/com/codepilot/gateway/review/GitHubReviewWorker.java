@@ -39,6 +39,7 @@ import com.codepilot.gateway.github.GitHubPullRequestEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -87,7 +88,8 @@ public class GitHubReviewWorker {
 
     private final int maxIterations;
 
-    public GitHubReviewWorker(
+    @Autowired
+    GitHubReviewWorker(
             RedisStreamReviewEventBuffer eventBuffer,
             ReviewSessionRepository reviewSessionRepository,
             GitHubPullRequestClient pullRequestClient,

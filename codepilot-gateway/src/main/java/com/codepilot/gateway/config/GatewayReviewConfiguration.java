@@ -6,7 +6,9 @@ import com.codepilot.core.application.context.ImpactCalculator;
 import com.codepilot.core.application.memory.MemoryService;
 import com.codepilot.core.application.review.TokenCounter;
 import com.codepilot.core.domain.context.ContextCompiler;
+import com.codepilot.core.domain.memory.ProjectMemoryRepository;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
+import com.codepilot.core.infrastructure.persistence.inmemory.InMemoryProjectMemoryRepository;
 import com.codepilot.core.infrastructure.config.GatewayProperties;
 import com.codepilot.core.infrastructure.context.ClasspathCompilationStrategyLoader;
 import com.codepilot.core.infrastructure.context.JavaParserAstParser;
@@ -61,6 +63,11 @@ public class GatewayReviewConfiguration {
     @Bean
     ReviewSessionRepository reviewSessionRepository() {
         return new InMemoryReviewSessionRepository();
+    }
+
+    @Bean
+    ProjectMemoryRepository projectMemoryRepository() {
+        return new InMemoryProjectMemoryRepository();
     }
 
     @Bean
