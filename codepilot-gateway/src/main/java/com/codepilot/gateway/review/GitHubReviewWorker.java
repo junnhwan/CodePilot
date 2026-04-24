@@ -40,6 +40,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -100,7 +101,8 @@ public class GitHubReviewWorker {
             DiffAnalyzer diffAnalyzer,
             ContextCompiler contextCompiler,
             ObjectMapper objectMapper,
-            TokenCounter tokenCounter
+            TokenCounter tokenCounter,
+            @Value("${codepilot.llm.default-model:gpt-4.1-mini}") String reviewModel
     ) {
         this(
                 eventBuffer,
@@ -114,7 +116,7 @@ public class GitHubReviewWorker {
                 contextCompiler,
                 objectMapper,
                 tokenCounter,
-                "codepilot-gateway-review",
+                reviewModel,
                 Map.of(),
                 6
         );

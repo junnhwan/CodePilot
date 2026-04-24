@@ -543,6 +543,23 @@
   - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=ReviewEngineTest,ReviewOrchestratorTest,GitHubReviewWorkerTest,WebhookReceiverTest,GitHubWebhookIntakeServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，定向测试通过，并在测试输出中确认新增日志已覆盖入口、worker、orchestrator、engine 四段关键链路
   - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓测试通过，`core / gateway / eval / mcp-server / cli` 无回退
 
+### 补充修复：Gateway Review 模型配置读取
+
+- 目标
+  - 修复 Gateway 联调时 review 主链没有读取 `CODEPILOT_LLM_DEFAULT_MODEL` 的问题，避免运行时把不存在的占位模型名发给 OpenAI-compatible 接口
+  - 保持现有 `Webhook -> Worker -> Review -> Report -> Dream` 主链不重写，只修正 `GitHubReviewWorker` 默认模型来源
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `codepilot-gateway` 的 `GitHubReviewWorker` 默认构造路径已从硬编码 `codepilot-gateway-review` 改为读取 `codepilot.llm.default-model`，与 `application.yml` 中的 `CODEPILOT_LLM_DEFAULT_MODEL` 桥接保持一致
+  - 新增 `GitHubReviewWorkerContextTest.bindsReviewModelFromGatewayLlmConfiguration`，锁定 Gateway Bean 在真实 Spring 上下文中会绑定配置模型，避免后续联调再次回退到占位模型名
+  - 当前修复只影响 Gateway 运行时默认模型，不改你显式传参的测试构造路径，也不碰现有 `.env` / `application.yml`
+- 验收结果
+  - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-gateway -am "-Dtest=GitHubReviewWorkerContextTest,GitHubReviewWorkerTest,GatewayApplicationPropertyMappingTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，Gateway 默认模型绑定与受影响链路测试通过
+  - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓测试通过，`core / gateway / eval / mcp-server / cli` 无回退
+
 ---
 
 ## 延期清单

@@ -11,6 +11,7 @@ import com.codepilot.gateway.github.GitHubPullRequestClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -34,5 +35,15 @@ class GitHubReviewWorkerContextTest {
     @Test
     void createsReviewWorkerBeanWhenDependenciesArePresent() {
         contextRunner.run(context -> assertThat(context).hasSingleBean(GitHubReviewWorker.class));
+    }
+
+    @Test
+    void bindsReviewModelFromGatewayLlmConfiguration() {
+        contextRunner
+                .withPropertyValues("codepilot.llm.default-model=qwen-max")
+                .run(context -> {
+                    GitHubReviewWorker worker = context.getBean(GitHubReviewWorker.class);
+                    assertThat(ReflectionTestUtils.getField(worker, "reviewModel")).isEqualTo("qwen-max");
+                });
     }
 }
