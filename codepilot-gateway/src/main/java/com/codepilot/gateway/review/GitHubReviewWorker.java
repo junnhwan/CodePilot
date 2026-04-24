@@ -23,13 +23,7 @@ import com.codepilot.core.domain.review.ReviewResult;
 import com.codepilot.core.domain.session.ReviewSession;
 import com.codepilot.core.domain.session.ReviewSessionRepository;
 import com.codepilot.core.domain.session.SessionEvent;
-import com.codepilot.core.infrastructure.context.JavaParserAstParser;
-import com.codepilot.core.infrastructure.tool.AstFindReferencesTool;
-import com.codepilot.core.infrastructure.tool.AstGetCallChainTool;
 import com.codepilot.core.infrastructure.tool.AstParseTool;
-import com.codepilot.core.infrastructure.tool.GitBlameTool;
-import com.codepilot.core.infrastructure.tool.GitDiffContextTool;
-import com.codepilot.core.infrastructure.tool.GitLogTool;
 import com.codepilot.core.infrastructure.tool.MemorySearchTool;
 import com.codepilot.core.infrastructure.tool.ReadFileTool;
 import com.codepilot.core.infrastructure.tool.SearchPatternTool;
@@ -425,16 +419,12 @@ public class GitHubReviewWorker {
     }
 
     private ReviewOrchestrator buildReviewOrchestrator(Path repoRoot, String projectId) {
-        JavaParserAstParser astParser = new JavaParserAstParser();
+        // Gateway review runs against a temporary PR snapshot workspace instead of a full git clone,
+        // so only expose tools that are stable without .git metadata or whole-repo symbol completeness.
         ToolRegistry toolRegistry = new ToolRegistry(List.of(
                 new ReadFileTool(repoRoot),
                 new SearchPatternTool(repoRoot),
                 new AstParseTool(repoRoot, objectMapper),
-                new GitBlameTool(repoRoot),
-                new GitLogTool(repoRoot),
-                new GitDiffContextTool(repoRoot),
-                new AstFindReferencesTool(repoRoot, objectMapper, astParser),
-                new AstGetCallChainTool(repoRoot, objectMapper, astParser),
                 new MemorySearchTool(projectMemoryRepository, projectId)
         ));
         return new ReviewOrchestrator(

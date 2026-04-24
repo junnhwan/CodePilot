@@ -224,14 +224,15 @@ public final class ReviewEngine {
             }
 
             LOGGER.warn(
-                    "Unsupported review decision sessionId={} taskId={} reviewer={} iteration={} decision={}",
+                    "Unsupported review decision; degrading to partial result sessionId={} taskId={} reviewer={} iteration={} decision={} collectedFindings={}",
                     sessionId,
                     reviewTask.taskId(),
                     agentDefinition.agentName(),
                     iteration + 1,
-                    decision
+                    decision,
+                    collectedFindings.size()
             );
-            throw new IllegalStateException("Unsupported review decision %s for task %s".formatted(decision, reviewTask.taskId()));
+            return partialResult(sessionId, collectedFindings.values());
         }
 
         LOGGER.warn(

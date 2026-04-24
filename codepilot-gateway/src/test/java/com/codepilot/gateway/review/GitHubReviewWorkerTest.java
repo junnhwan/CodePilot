@@ -629,12 +629,17 @@ class GitHubReviewWorkerTest {
         public LlmResponse chat(LlmRequest request) {
             ReviewTask.TaskType taskType = taskType(request.messages());
             seenTaskTypes.add(taskType);
+            String systemPrompt = request.messages().stream()
+                    .filter(message -> "system".equals(message.role()))
+                    .map(LlmMessage::content)
+                    .findFirst()
+                    .orElseThrow();
+            assertThat(systemPrompt).doesNotContain("git_diff_context");
+            assertThat(systemPrompt).doesNotContain("git_blame");
+            assertThat(systemPrompt).doesNotContain("git_log");
+            assertThat(systemPrompt).doesNotContain("ast_find_references");
+            assertThat(systemPrompt).doesNotContain("ast_get_call_chain");
             if (taskType == ReviewTask.TaskType.SECURITY) {
-                String systemPrompt = request.messages().stream()
-                        .filter(message -> "system".equals(message.role()))
-                        .map(LlmMessage::content)
-                        .findFirst()
-                        .orElseThrow();
                 assertThat(systemPrompt).contains("Validation missing before repository call");
                 assertThat(systemPrompt).contains("Controllers must validate request input before repository access.");
                 assertThat(systemPrompt).doesNotContain("Use Slf4j instead of direct System.out printing.");

@@ -560,6 +560,24 @@
   - `2026-04-24` 执行 `.\mvnw.cmd -pl codepilot-gateway -am "-Dtest=GitHubReviewWorkerContextTest,GitHubReviewWorkerTest,GatewayApplicationPropertyMappingTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，Gateway 默认模型绑定与受影响链路测试通过
   - `2026-04-24` 执行 `.\mvnw.cmd test`，全仓测试通过，`core / gateway / eval / mcp-server / cli` 无回退
 
+### 补充修复：Gateway 快照工作区工具收敛与无效决策降级
+
+- 目标
+  - 修复 Gateway 在“PR 文件快照临时工作区”联调模式下暴露不适用工具，导致 reviewer 频繁调用 `git_diff_context / ast_find_references / ast_get_call_chain` 失败并拖垮整场 review 的问题
+  - 让 `ReviewEngine` 在模型返回空 decision / 非法 decision 时按 `partial` 结果降级，而不是直接把整个 session 标记为 `FAILED`
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `codepilot-gateway` 的 `GitHubReviewWorker` 已把 Gateway 运行时可用工具收敛到快照安全集合：`read_file / search_pattern / ast_parse / memory_search`；不再向 reviewer 暴露依赖完整 `.git` 元数据或全量源码树的工具
+  - `codepilot-core` 的 `ReviewEngine` 已对“无 tool call 且 decision 为空/非法”的响应做降级处理：记录 `WARN` 日志并返回 `partial=true` 的 `ReviewResult`，保住当前已产出的 findings，不再因为单个 reviewer 输出异常而拖垮整场 review
+  - 新增 `ReviewEngineTest.degradesToPartialResultWhenModelReturnsUnsupportedDecision`，锁定空 decision 降级行为
+  - 扩展 `GitHubReviewWorkerTest`，锁定 Gateway reviewer prompt 不再暴露 `git_diff_context / git_blame / git_log / ast_find_references / ast_get_call_chain`
+- 验收结果
+  - `2026-04-25` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=ReviewEngineTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，定向测试通过，确认快照工作区工具已收敛，空 decision 会降级为 partial
+  - `2026-04-25` 执行 `.\mvnw.cmd test`，全仓测试通过，`core / gateway / eval / mcp-server / cli` 无回退
+
 ---
 
 ## 延期清单
