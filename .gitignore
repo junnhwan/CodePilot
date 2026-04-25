@@ -3,5 +3,7 @@ target/
 *.log
 .idea/
 .vscode/
+.env
+.env.gateway.local
 
 node_modules/

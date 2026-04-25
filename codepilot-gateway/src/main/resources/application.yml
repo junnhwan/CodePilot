@@ -3,7 +3,7 @@ spring:
     name: codepilot-gateway
   data:
     redis:
-      url: ${CODEPILOT_REDIS_URL:redis://localhost:6379}
+      url: ${CODEPILOT_REDIS_URL:redis://your-password-here@your-host-here:6379}
       username: ${CODEPILOT_REDIS_USERNAME:}
       password: ${CODEPILOT_REDIS_PASSWORD:}
   threads:
