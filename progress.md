@@ -578,6 +578,23 @@
   - `2026-04-25` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=ReviewEngineTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，定向测试通过，确认快照工作区工具已收敛，空 decision 会降级为 partial
   - `2026-04-25` 执行 `.\mvnw.cmd test`，全仓测试通过，`core / gateway / eval / mcp-server / cli` 无回退
 
+### 补充修复：LLM 非法结构化响应降级
+
+- 目标
+  - 修复 reviewer 在无原生 tool call 时返回“近似 JSON 但不合法”的文本，导致 `ToolCallParser.parse(...)` 直接抛错并把整场 Gateway review 打成 `FAILED` 的问题
+  - 保持现有 review 主链不重写，只在 `ReviewEngine` 内补解析异常兜底
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `codepilot-core` 的 `ReviewEngine` 已在 `toolCallParser.parse(response)` 外层补 `IllegalArgumentException` 兜底；当模型返回非法结构化内容时，先记录带 preview 的 `WARN` 日志，再按“无可解析 tool call”继续走后续降级分支
+  - `ReviewEngine` 解析 `DELIVER / decision` 时也统一复用 `tryParseStructuredContent(...)`，避免第二次直接抛解析异常
+  - 新增 `ReviewEngineTest.degradesToPartialResultWhenStructuredResponseIsMalformed`，锁定类似 `{findings: [], decision: DELIVER}` 这类非严格 JSON 响应会被降级为 `partial`，而不是直接炸 session
+- 验收结果
+  - `2026-04-25` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=ReviewEngineTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，定向测试通过，确认非法结构化响应会被降级处理
+  - `2026-04-25` 执行 `.\mvnw.cmd test`，全仓测试通过，`core / gateway / eval / mcp-server / cli` 无回退
+
 ---
 
 ## 延期清单

@@ -318,6 +318,41 @@ class ReviewEngineTest {
         assertThat(reviewResult.findings()).isEmpty();
     }
 
+    @Test
+    void degradesToPartialResultWhenStructuredResponseIsMalformed() {
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(new ReadFileTool(repoRoot)));
+        TokenCounter tokenCounter = new TokenCounter();
+        ReviewEngine engine = new ReviewEngine(
+                new StubLlmClient(List.of(
+                        new LlmResponse(
+                                "{findings: [], decision: DELIVER}",
+                                List.of(),
+                                new LlmUsage(120, 20, 140),
+                                "stop"
+                        )
+                )),
+                toolRegistry,
+                new ToolExecutor(toolRegistry),
+                new ToolCallParser(JsonMapper.builder().findAndAddModules().build()),
+                tokenCounter,
+                new ContextGovernor(tokenCounter),
+                new LoopDetector(),
+                "mock-review-model",
+                Map.of(),
+                4
+        );
+
+        ReviewResult reviewResult = engine.execute(
+                "session-malformed",
+                securityAgent(),
+                reviewTask("task-malformed", "src/main/java/com/example/UserRepository.java"),
+                contextPack("src/main/java/com/example/UserRepository.java", 8000, 1000)
+        );
+
+        assertThat(reviewResult.partial()).isTrue();
+        assertThat(reviewResult.findings()).isEmpty();
+    }
+
     private static LlmResponse repeatedToolCallResponse() {
         return new LlmResponse(
                 """

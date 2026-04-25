@@ -153,7 +153,21 @@ public final class ReviewEngine {
                     response.finishReason(),
                     response.usage() == null ? null : response.usage().totalTokens()
             );
-            List<ToolCall> toolCalls = toolCallParser.parse(response);
+            List<ToolCall> toolCalls;
+            try {
+                toolCalls = toolCallParser.parse(response);
+            } catch (IllegalArgumentException parseError) {
+                LOGGER.warn(
+                        "Failed to parse tool decision from LLM response; degrading to structured-content fallback sessionId={} taskId={} reviewer={} iteration={} error={} preview={}",
+                        sessionId,
+                        reviewTask.taskId(),
+                        agentDefinition.agentName(),
+                        iteration + 1,
+                        parseError.getMessage(),
+                        preview(response.content())
+                );
+                toolCalls = List.of();
+            }
 
             if (!toolCalls.isEmpty()) {
                 collectFindings(collectedFindings, tryParseStructuredContent(response.content()), reviewTask);
@@ -194,7 +208,7 @@ public final class ReviewEngine {
                 continue;
             }
 
-            JsonNode payload = toolCallParser.parseStructuredContent(response.content());
+            JsonNode payload = tryParseStructuredContent(response.content());
             collectFindings(collectedFindings, payload, reviewTask);
             String decision = payload == null ? "" : payload.path("decision").asText("");
             LOGGER.info(
@@ -296,6 +310,14 @@ public final class ReviewEngine {
         return toolCalls.stream()
                 .map(ToolCall::toolName)
                 .toList();
+    }
+
+    private String preview(String content) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        String normalized = content.replaceAll("\\s+", " ").trim();
+        return normalized.length() <= 160 ? normalized : normalized.substring(0, 160) + "...";
     }
 
     private LlmMessage toAssistantToolCallMessage(List<ToolCall> toolCalls) {
