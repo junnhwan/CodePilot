@@ -9,94 +9,58 @@ import {
   Cpu, Boxes, Search, Terminal as TerminalIcon
 } from 'lucide-react';
 import { client } from '../api/client';
-import type { ReviewSession, SseEvent, ReviewTask } from '../types';
+import {
+  applyReviewEvent,
+  createReviewDetailState,
+  getEventKey,
+  getFindingsTotal,
+  getStats,
+  getTaskStatusColor,
+  getTaskStatusLabel,
+} from './reviewDetailState.ts';
 
-const ReviewDetail: React.FC = () => {
-  const { sessionId } = useParams<{ sessionId: string }>();
+interface ReviewDetailContentProps {
+  sessionId: string;
+}
+
+const ReviewDetailContent: React.FC<ReviewDetailContentProps> = ({ sessionId }) => {
   const navigate = useNavigate();
-  const [session, setSession] = useState<ReviewSession | null>(null);
-  const [events, setEvents] = useState<SseEvent[]>([]);
-  const [tasks, setTasks] = useState<Record<string, ReviewTask>>({});
+  const [viewState, setViewState] = useState(() => createReviewDetailState(null));
   const [activeTab, setActiveTab] = useState<'dashboard' | 'report'>('dashboard');
   const [report, setReport] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
+  const { session, events, tasks } = viewState;
+
   useEffect(() => {
     if (!sessionId) return;
 
+    let cancelled = false;
+    let unsubscribe = () => {};
+
     client.getSession(sessionId)
-      .then(setSession)
-      .catch(err => setError(err.message));
+      .then((fetchedSession) => {
+        if (cancelled) {
+          return;
+        }
+        setViewState(createReviewDetailState(fetchedSession));
+        unsubscribe = client.subscribe(sessionId, (event) => {
+          if (cancelled) {
+            return;
+          }
+          setViewState(prev => applyReviewEvent(prev, event));
+        });
+      })
+      .catch(err => {
+        if (!cancelled) {
+          setError(err.message);
+        }
+      });
 
-    const unsubscribe = client.subscribe(sessionId, (event) => {
-      setEvents(prev => [event, ...prev].slice(0, 100));
-
-      switch (event.type) {
-        case 'session_created':
-          setSession(prev => prev ? { ...prev, state: 'PLANNING' } : null);
-          break;
-        case 'plan_ready':
-          setSession(prev => prev ? { ...prev, state: 'REVIEWING' } : null);
-          break;
-        case 'task_started':
-          setTasks(prev => ({
-            ...prev,
-            [event.data.taskId]: {
-              taskId: event.data.taskId,
-              type: event.data.type || 'UNKNOWN',
-              findingCount: 0,
-              partial: false,
-              state: 'IN_PROGRESS'
-            }
-          }));
-          break;
-        case 'finding_found':
-          setTasks(prev => {
-            const taskId = event.data.taskId;
-            const task = prev[taskId] || {
-              taskId,
-              type: 'UNKNOWN',
-              findingCount: 0,
-              state: 'IN_PROGRESS',
-              partial: false
-            };
-            return {
-              ...prev,
-              [taskId]: { ...task, findingCount: (task.findingCount || 0) + 1 }
-            };
-          });
-          break;
-        case 'task_completed':
-          setTasks(prev => {
-            const taskId = event.data.taskId;
-            const task = prev[taskId] || {
-              taskId,
-              type: 'UNKNOWN',
-              findingCount: 0,
-              state: 'COMPLETED',
-              partial: false
-            };
-            return {
-              ...prev,
-              [taskId]: {
-                ...task,
-                state: 'COMPLETED',
-                findingCount: event.data.findingCount ?? task.findingCount,
-                partial: !!event.data.partial
-              }
-            };
-          });
-          break;
-        case 'review_completed':
-          setSession(prev => prev ? { ...prev, state: 'DONE', completedAt: event.timestamp } : null);
-          break;
-        case 'review_failed':
-          setSession(prev => prev ? { ...prev, state: 'FAILED' } : null);
-          break;
-      }
-    });
-
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [sessionId]);
 
   useEffect(() => {
@@ -105,19 +69,13 @@ const ReviewDetail: React.FC = () => {
     }
   }, [activeTab, sessionId]);
 
-  const findingsTotal = useMemo(() => {
-    return Object.values(tasks).reduce((acc, task) => acc + task.findingCount, 0);
-  }, [tasks]);
-
-  const stats = useMemo(() => {
-    const completedTasks = Object.values(tasks).filter(t => t.state === 'COMPLETED').length;
-    const totalTasks = Object.values(tasks).length;
-    return {
-      progress: totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0,
-      activeAgents: Object.values(tasks).filter(t => t.state === 'IN_PROGRESS').length,
-      findingDensity: totalTasks > 0 ? (findingsTotal / totalTasks).toFixed(1) : 0
-    };
-  }, [tasks, findingsTotal]);
+  const taskList = useMemo(() => Object.values(tasks), [tasks]);
+  const findingEvents = useMemo(
+    () => events.filter((event) => event.type === 'finding_found'),
+    [events],
+  );
+  const findingsTotal = useMemo(() => getFindingsTotal(tasks), [tasks]);
+  const stats = useMemo(() => getStats(tasks, findingsTotal), [tasks, findingsTotal]);
 
   if (error) {
     return (
@@ -240,53 +198,59 @@ const ReviewDetail: React.FC = () => {
                </h3>
 
                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1.5rem', marginBottom: '4rem' }}>
-                 {Object.values(tasks).length === 0 && (
-                   <div className="premium-card" style={{ gridColumn: 'span 2', textAlign: 'center', padding: '4rem', background: 'rgba(255,255,255,0.2)' }}>
-                      <div className="thinking-dot" style={{ margin: '0 auto 1.5rem' }}></div>
-                      <p style={{ color: 'var(--text-dim)', fontWeight: 500 }}>Planning Agent 正在解析 Diff 并指派专家任务...</p>
-                   </div>
-                 )}
-                 {Object.values(tasks).map((task, idx) => (
-                   <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: idx * 0.1 }} key={task.taskId} className="premium-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1.2rem' }}>
-                        <div style={{ background: 'var(--bg-primary)', padding: '1rem', borderRadius: '16px', color: 'var(--brand-azure-deep)', display: 'flex' }}>
-                          {task.type === 'SECURITY' ? <Shield /> : task.type === 'PERF' ? <Zap /> : <Palette />}
-                        </div>
-                        <div>
-                          <div style={{ fontWeight: 800, fontSize: '1.1rem' }}>{task.type} Agent</div>
-                          <div className="label-xs" style={{ marginTop: '0.2rem' }}>TASK: {task.taskId.substring(0, 8)}</div>
-                        </div>
-                      </div>
-                      <div style={{ textAlign: 'right' }}>
-                         <div style={{ fontWeight: 900, fontSize: '1.4rem', color: task.findingCount > 0 ? 'var(--brand-warm)' : 'var(--text-main)' }}>{task.findingCount}</div>
-                         <div style={{ fontSize: '0.75rem', fontWeight: 700, color: task.state === 'IN_PROGRESS' ? 'var(--brand-azure)' : 'var(--brand-success)' }}>
-                            {task.state === 'IN_PROGRESS' ? 'WORKING...' : 'COMPLETED'}
+                 {taskList.length === 0 && (
+                    <div className="premium-card" style={{ gridColumn: 'span 2', textAlign: 'center', padding: '4rem', background: 'rgba(255,255,255,0.2)' }}>
+                       <div className="thinking-dot" style={{ margin: '0 auto 1.5rem' }}></div>
+                       <p style={{ color: 'var(--text-dim)', fontWeight: 500 }}>Planning Agent 正在解析 Diff 并指派专家任务...</p>
+                    </div>
+                  )}
+                  {taskList.map((task, idx) => (
+                    <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: idx * 0.1 }} key={task.taskId} className="premium-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                       <div style={{ display: 'flex', alignItems: 'center', gap: '1.2rem' }}>
+                         <div style={{ background: 'var(--bg-primary)', padding: '1rem', borderRadius: '16px', color: 'var(--brand-azure-deep)', display: 'flex' }}>
+                          {task.type === 'SECURITY'
+                            ? <Shield />
+                            : task.type === 'PERF'
+                              ? <Zap />
+                              : task.type === 'STYLE'
+                                ? <Palette />
+                                : <Boxes />}
                          </div>
-                      </div>
-                   </motion.div>
-                 ))}
-               </div>
+                         <div>
+                           <div style={{ fontWeight: 800, fontSize: '1.1rem' }}>{task.type} Agent</div>
+                           <div className="label-xs" style={{ marginTop: '0.2rem' }}>TASK: {task.taskId.substring(0, 8)}</div>
+                         </div>
+                       </div>
+                       <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontWeight: 900, fontSize: '1.4rem', color: task.findingCount > 0 ? 'var(--brand-warm)' : 'var(--text-main)' }}>{task.findingCount}</div>
+                         <div style={{ fontSize: '0.75rem', fontWeight: 700, color: getTaskStatusColor(task) }}>
+                            {getTaskStatusLabel(task)}
+                          </div>
+                       </div>
+                    </motion.div>
+                  ))}
+                </div>
 
                <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginBottom: '1.5rem' }}>
                   <Boxes size={20} color="var(--brand-warm)" /> 实时 Findings 流 (Real-time Detection)
                </h3>
                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem' }}>
-                 {events.filter(e => e.type === 'finding_found').map((e, i) => (
-                   <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} key={i} className={`finding-item finding-${e.data.severity} premium-card`} style={{ margin: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.6rem' }}>
-                        <span style={{ fontWeight: 800, fontSize: '1rem' }}>{e.data.title}</span>
-                        <span className={`badge ${e.data.severity === 'CRITICAL' ? 'badge-danger' : 'badge-warning'}`}>{e.data.severity}</span>
-                      </div>
+                  {findingEvents.map((e) => (
+                    <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} key={getEventKey(e)} className={`finding-item finding-${e.data.severity} premium-card`} style={{ margin: 0 }}>
+                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.6rem' }}>
+                         <span style={{ fontWeight: 800, fontSize: '1rem' }}>{e.data.title}</span>
+                         <span className={`badge ${e.data.severity === 'CRITICAL' ? 'badge-danger' : 'badge-warning'}`}>{e.data.severity}</span>
+                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
                          <Search size={12} /> {e.data.file}:{e.data.line}
                       </div>
                    </motion.div>
                  ))}
-                 {events.filter(e => e.type === 'finding_found').length === 0 && (
-                   <div style={{ gridColumn: 'span 2', padding: '3rem', textAlign: 'center', color: 'var(--text-ghost)', border: '2px dashed var(--glass-border)', borderRadius: '20px' }}>
-                      等待 Agent 集群上报审查结果...
-                   </div>
-                 )}
+                  {findingEvents.length === 0 && (
+                    <div style={{ gridColumn: 'span 2', padding: '3rem', textAlign: 'center', color: 'var(--text-ghost)', border: '2px dashed var(--glass-border)', borderRadius: '20px' }}>
+                       等待 Agent 集群上报审查结果...
+                    </div>
+                  )}
                </div>
             </motion.div>
           ) : (
@@ -311,10 +275,10 @@ const ReviewDetail: React.FC = () => {
         <div className="stat-grid">
            {[
              { label: "完成进度", value: `${stats.progress}%` },
-             { label: "活跃 Agent", value: stats.activeAgents },
+             { label: "当前活跃 Agent", value: stats.activeAgents },
              { label: "发现总数", value: findingsTotal },
              { label: "问题密度", value: stats.findingDensity }
-           ].map((s, i) => (
+            ].map((s, i) => (
              <div key={i} className="stat-item">
                 <div className="stat-value">{s.value}</div>
                 <div className="stat-label">{s.label}</div>
@@ -339,8 +303,8 @@ const ReviewDetail: React.FC = () => {
           <History size={20} color="var(--text-dim)" /> 实时流水线 (Logs)
         </h3>
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-           {events.map((e, i) => (
-             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} key={i} className="timeline-item">
+           {events.map((e) => (
+             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} key={`${getEventKey(e)}:${e.timestamp}`} className="timeline-item">
                 <span className="timeline-time">{new Date(e.timestamp).toLocaleTimeString([], { hour12: false })}</span>
                 <div className="timeline-content">
                    <div style={{ fontWeight: 800, fontSize: '0.75rem', color: 'var(--text-main)' }}>{e.type.replace(/_/g, ' ')}</div>
@@ -352,6 +316,16 @@ const ReviewDetail: React.FC = () => {
       </aside>
     </div>
   );
+};
+
+const ReviewDetail: React.FC = () => {
+  const { sessionId } = useParams<{ sessionId: string }>();
+
+  if (!sessionId) {
+    return null;
+  }
+
+  return <ReviewDetailContent key={sessionId} sessionId={sessionId} />;
 };
 
 export default ReviewDetail;

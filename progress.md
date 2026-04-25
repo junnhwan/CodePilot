@@ -595,6 +595,26 @@
   - `2026-04-25` 执行 `.\mvnw.cmd -pl codepilot-core,codepilot-gateway -am "-Dtest=ReviewEngineTest,GitHubReviewWorkerTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，定向测试通过，确认非法结构化响应会被降级处理
   - `2026-04-25` 执行 `.\mvnw.cmd test`，全仓测试通过，`core / gateway / eval / mcp-server / cli` 无回退
 
+### 补充修复：评审前端展示一致性
+
+- 目标
+  - 修复 `codepilot-web` 在真实联调时的前端展示不一致问题，避免 SSE backlog 回放与开发态重复订阅导致 Findings/日志重复显示
+  - 让评审详情页正确同步 `partial` 会话状态，并明确区分“任务已完成”与“任务部分完成”
+- 优先级
+  - `P1`
+- 当前状态
+  - `DONE`
+- 实际产出
+  - `codepilot-web` 新增 `reviewDetailState.ts`，把评审详情页中的 SSE 事件去重、任务归并、统计计算从页面组件中抽离成可测试的前端状态模块
+  - `ReviewDetail.tsx` 已改为消费该状态模块：重复 `finding_found / task_started / task_completed / review_completed` 事件不会再重复渲染；`review_completed` 事件会同步 `session.partial / findingCount / completedAt`
+  - 任务卡片状态文案已改为显式区分 `WORKING... / PARTIAL / COMPLETED`，并给 `MAINTAIN` 任务使用独立图标，降低“像只跑了一个 agent”的误读
+  - 时间线与 Findings 卡片改为稳定 key，不再使用数组索引，减少 prepend 场景下的 React 复用错位
+  - `tsconfig.app.json` 已补 `node` 类型，允许前端用原生 `node:test` 维护轻量回归用例而不额外引入测试框架
+- 验收结果
+  - `2026-04-25` 执行 `node --experimental-strip-types --test codepilot-web/src/pages/reviewDetailState.test.ts`，3 个前端状态回归用例通过，覆盖重复 finding 去重、`review_completed.partial` 同步、任务状态文案
+  - `2026-04-25` 执行 `npm --prefix codepilot-web run build`，前端构建通过
+  - `2026-04-25` 执行 `npm --prefix codepilot-web run lint`，前端 lint 通过
+
 ---
 
 ## 延期清单
